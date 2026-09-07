@@ -1009,10 +1009,16 @@ function draw() {
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(w2sX(x0) - 4, w2sY(y0) - 4, (x1 - x0) * z + 8, (y1 - y0) * z + 8);
       ctx.setLineDash([]);
+      // alças de canto: dá pra redimensionar o grupo inteiro de uma vez
+      for (const [hx, hy] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) {
+        ctx.fillStyle = '#fff'; ctx.strokeStyle = '#6965db'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.rect(w2sX(hx) - 4, w2sY(hy) - 4, 8, 8); ctx.fill(); ctx.stroke();
+      }
       ctx.fillStyle = '#6965db';
       ctx.font = '600 11px ' + FONT_NORMAL;
       ctx.textBaseline = 'bottom';
-      ctx.fillText(selItems.length + ' selecionados', w2sX(x0) - 4, w2sY(y0) - 8);
+      const glabel = selItems.every(i => i.g && i.g === selItems[0].g) ? 'Grupo' : selItems.length + ' selecionados';
+      ctx.fillText(glabel, w2sX(x0) - 4, w2sY(y0) - 8);
     }
     if (selItems.length === 1) {
       const it = selItems[0];
@@ -1122,6 +1128,47 @@ function redo() {
 function refreshBL() {
   if (undoBtn) undoBtn.disabled = !undoStack.length;
   if (redoBtn) redoBtn.disabled = !redoStack.length;
+}
+
+/* ---------- agrupar / desagrupar ---------- */
+// Um grupo é um conjunto de itens que compartilham o mesmo campo `g` (id do
+// grupo). Selecionar um membro seleciona o grupo; mover/redimensionar age em
+// todos juntos. Sem tipo novo: só um campo a mais no item, que o sync por
+// diff já carrega.
+function groupBoxOf(ids) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const id of ids) {
+    const it = scene.items.find(i => i.id === id);
+    if (!it) continue;
+    const b = rotAABB(it);
+    x0 = Math.min(x0, b.bx); y0 = Math.min(y0, b.by);
+    x1 = Math.max(x1, b.bx + b.w); y1 = Math.max(y1, b.by + b.h);
+  }
+  if (x1 < x0) return null;
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+function expandGroup(ids) {
+  const gs = new Set();
+  for (const id of ids) { const it = scene.items.find(i => i.id === id); if (it && it.g) gs.add(it.g); }
+  if (!gs.size) return ids.slice();
+  const out = new Set(ids);
+  for (const it of scene.items) if (it.g && gs.has(it.g)) out.add(it.id);
+  return [...out];
+}
+function groupSel() {
+  if (selIds.length < 2) { setHint('selecione 2+ itens para agrupar'); return; }
+  pushUndo(JSON.stringify(scene.items));
+  const gid = 'g' + uid();
+  for (const id of selIds) { const it = scene.items.find(i => i.id === id); if (it) it.g = gid; }
+  save(); draw();
+  setHint(selIds.length + ' itens agrupados (Ctrl+Shift+G desfaz)');
+}
+function ungroupSel() {
+  if (!selIds.length) return;
+  pushUndo(JSON.stringify(scene.items));
+  for (const id of selIds) { const it = scene.items.find(i => i.id === id); if (it) delete it.g; }
+  save(); draw();
+  setHint('grupo desfeito');
 }
 
 /* ---------- salvar / sincronizar ---------- */
@@ -1343,6 +1390,15 @@ function canvasPos(e) {
   return [e.clientX - r.left, e.clientY - r.top];
 }
 function handleHit(sx, sy) {
+  if (selIds.length > 1) {
+    const gb = groupBoxOf(selIds);
+    if (!gb) return null;
+    const corners = [[gb.x, gb.y], [gb.x + gb.w, gb.y], [gb.x + gb.w, gb.y + gb.h], [gb.x, gb.y + gb.h]];
+    for (let i = 0; i < 4; i++) {
+      if (Math.abs(sx - w2sX(corners[i][0])) <= 7 && Math.abs(sy - w2sY(corners[i][1])) <= 7) return ['nw', 'ne', 'se', 'sw'][i];
+    }
+    return null;
+  }
   if (selIds.length !== 1) return null;
   const it = scene.items.find(i => i.id === selIds[0]);
   if (!it) return null;
@@ -1404,8 +1460,18 @@ cv.addEventListener('pointerdown', e => {
       return;
     }
     if (h) {
-      const it = scene.items.find(i => i.id === selIds[0]);
       mode = 'resize';
+      if (selIds.length > 1) {
+        const gb = groupBoxOf(selIds);
+        const origs = {};
+        for (const id of selIds) {
+          const o = scene.items.find(i => i.id === id);
+          if (o) origs[id] = Object.assign(snapshotOf(o), { fontSize: o.fontSize });
+        }
+        gesture = { group: true, corner: h, gbox0: gb, origs, before: subsetSnap(selIds), patchIds: selIds.slice() };
+        return;
+      }
+      const it = scene.items.find(i => i.id === selIds[0]);
       const b = itemBox(it);
       gesture = {
         corner: h,
@@ -1434,7 +1500,7 @@ cv.addEventListener('pointerdown', e => {
         selIds = selIds.includes(it.id) ? selIds.filter(i => i !== it.id) : [...selIds, it.id];
         mode = null;
       } else {
-        if (!selIds.includes(it.id)) selIds = [it.id];
+        if (!selIds.includes(it.id)) selIds = e.altKey ? [it.id] : expandGroup([it.id]);
         mode = 'move';
         gesture = {
           startWx: wx, startWy: wy,
@@ -1606,6 +1672,38 @@ cv.addEventListener('pointermove', e => {
     return;
   }
   if (mode === 'resize') {
+    if (gesture.group) {
+      const g0 = gesture.gbox0;
+      if (!g0 || g0.w <= 0 || g0.h <= 0) return;
+      const { corner } = gesture;
+      let x = g0.x, y = g0.y, w = g0.w, h = g0.h;
+      if (corner.includes('e')) w = wx - x;
+      if (corner.includes('s')) h = wy - y;
+      if (corner.includes('w')) { w = g0.x + g0.w - wx; x = wx; }
+      if (corner.includes('n')) { h = g0.y + g0.h - wy; y = wy; }
+      w = Math.max(10, w); h = Math.max(10, h);
+      if (e.shiftKey) {
+        const s = Math.max(w / g0.w, h / g0.h);
+        w = g0.w * s; h = g0.h * s;
+        if (corner.includes('w')) x = g0.x + g0.w - w;
+        if (corner.includes('n')) y = g0.y + g0.h - h;
+      }
+      const sx = w / g0.w, sy = h / g0.h;
+      for (const id of selIds) {
+        const it = scene.items.find(i => i.id === id); const o = gesture.origs[id];
+        if (!it || !o) continue;
+        it.x = x + (o.x - g0.x) * sx; it.y = y + (o.y - g0.y) * sy;
+        if (Number.isFinite(o.w)) it.w = o.w * sx;
+        if (Number.isFinite(o.h)) it.h = o.h * sy;
+        if (Number.isFinite(o.x2)) it.x2 = x + (o.x2 - g0.x) * sx;
+        if (Number.isFinite(o.y2)) it.y2 = y + (o.y2 - g0.y) * sy;
+        if (o.pts) it.points = o.pts.map(p => [x + (p[0] - g0.x) * sx, y + (p[1] - g0.y) * sy]);
+        if (o.mids) it.mids = o.mids.map(m => [x + (m[0] - g0.x) * sx, y + (m[1] - g0.y) * sy]);
+        if (it.type === 'text' && Number.isFinite(o.fontSize)) { it.fontSize = Math.max(4, Math.round(o.fontSize * (sx + sy) / 2 * 4) / 4); ensureTextSize(it); }
+      }
+      draw();
+      return;
+    }
     const it = scene.items.find(i => i.id === selIds[0]);
     if (!it) return;
     const { corner } = gesture;
@@ -1808,7 +1906,7 @@ cv.addEventListener('pointerup', e => {
     const [sxU, syU] = canvasPos(e);
     const dragged = Math.hypot(sxU - (gesture.sx0 ?? sxU), syU - (gesture.sy0 ?? syU)) >= 8;
     if (dragged) {
-      selIds = [...marqueeCands];
+      selIds = expandGroup(marqueeCands);
     } else {
       selIds = [];
     }
@@ -2013,6 +2111,8 @@ window.addEventListener('keydown', e => {
   if (mod && k === 'c') { e.preventDefault(); copySel(); return; }
   if (mod && k === 'x') { e.preventDefault(); cutSel(); return; }
   if (mod && k === 'v' && clip.length) { e.preventDefault(); pasteClip(); return; }
+  if (mod && e.shiftKey && k === 'g') { e.preventDefault(); ungroupSel(); return; }
+  if (mod && k === 'g') { e.preventDefault(); groupSel(); return; }
   if (mod && k === 'o') { e.preventDefault(); fileIn.click(); return; }
   if (mod && e.shiftKey && k === 'e') { e.preventDefault(); exportPng(); return; }
   if (mod && k === "'") { e.preventDefault(); toggleSnap(); return; }
@@ -3120,6 +3220,8 @@ document.getElementById('helpBody').innerHTML = `
 <tr><td>Alt (redimensionar texto)</td><td>a fonte do texto escala junto com a caixa</td></tr>
 <tr><td>Ctrl+↑ ↓ ← →</td><td>cria um fluxo: clona o elemento na direção e liga com seta</td></tr>
 <tr><td>Ctrl+Enter</td><td>cria fluxo da tela inteira (clona a moldura + conteúdo)</td></tr>
+<tr><td>Ctrl+G / Ctrl+Shift+G</td><td>agrupar / desagrupar a seleção (mover e redimensionar tudo junto)</td></tr>
+<tr><td>Alt + clique</td><td>selecionar um item sozinho dentro de um grupo</td></tr>
 <tr><td>Alt + - / = (texto)</td><td>fonte −/+ 0,25px</td></tr>
 <tr><td>Setas ligadas</td><td>arraste a ponta perto de uma forma para grudar; mova a forma e a seta acompanha</td></tr>
 <tr><td>Ctrl (redimensionar)</td><td>redimensiona simétrico ao redor do centro</td></tr>
@@ -3456,6 +3558,40 @@ async function runTests() {
     toggleZen(); toggleZen();
     toggleTheme(); toggleTheme();
     log('toggles: snap/zen/tema sem erro', true, '');
+
+    // agrupar/desagrupar: mover e redimensionar o grupo junto
+    {
+      scene.items = scene.items.filter(i => !/^grp/.test(i.id));
+      scene.items.push(
+        { id: 'grpa', type: 'rect', x: 2000, y: 2000, w: 40, h: 40, stroke: '#1b1b1f', strokeWidth: 2, roughness: 1 },
+        { id: 'grpb', type: 'rect', x: 2060, y: 2000, w: 40, h: 40, stroke: '#1b1b1f', strokeWidth: 2, roughness: 1 },
+      );
+      setTool('select'); selIds = ['grpa', 'grpb']; groupSel();
+      const gA = scene.items.find(i => i.id === 'grpa'), gB = scene.items.find(i => i.id === 'grpb');
+      log('grupo: Ctrl+G marca os dois com o mesmo g', !!gA.g && gA.g === gB.g, gA.g);
+      log('grupo: expandGroup pega o irmão', expandGroup(['grpa']).length === 2, '');
+      // clicar em um membro seleciona o grupo inteiro (zoom 1, grupo centralizado)
+      z = 1; panX = W / 2 - 2050; panY = H / 2 - 2020; draw(); await sleep(20);
+      selIds = []; draw();
+      const ca = { x: 2020, y: 2020 };
+      pd(w2sX(ca.x), w2sY(ca.y)); pu(w2sX(ca.x), w2sY(ca.y)); await sleep(20);
+      log('grupo: clique num membro pega os 2', selIds.length === 2 && selIds.includes('grpa') && selIds.includes('grpb'), 'sel=' + selIds.join(','));
+      // mover o grupo
+      const before = { a: scene.items.find(i => i.id === 'grpa').x, b: scene.items.find(i => i.id === 'grpb').x };
+      pd(w2sX(ca.x), w2sY(ca.y)); pm(w2sX(ca.x) + 80, w2sY(ca.y)); pu(w2sX(ca.x) + 80, w2sY(ca.y)); await sleep(30);
+      const mA = scene.items.find(i => i.id === 'grpa'), mB = scene.items.find(i => i.id === 'grpb');
+      log('grupo: mover arrasta os dois juntos', Math.abs((mA.x - before.a) - (mB.x - before.b)) < 2 && mA.x > before.a, `dA=${(mA.x - before.a).toFixed(0)} dB=${(mB.x - before.b).toFixed(0)}`);
+      // redimensionar o grupo pela alça SE
+      const gb = groupBoxOf(['grpa', 'grpb']);
+      const wa0 = scene.items.find(i => i.id === 'grpa').w;
+      const se = { x: gb.x + gb.w, y: gb.y + gb.h };
+      pd(w2sX(se.x), w2sY(se.y)); pm(w2sX(se.x) + 60, w2sY(se.y) + 60); pu(w2sX(se.x) + 60, w2sY(se.y) + 60); await sleep(30);
+      const rA = scene.items.find(i => i.id === 'grpa');
+      log('grupo: redimensionar escala os dois', rA.w > wa0 + 1, `w ${wa0.toFixed(0)}→${rA.w.toFixed(0)}`);
+      selIds = ['grpa', 'grpb']; ungroupSel();
+      log('grupo: Ctrl+Shift+G limpa o g', scene.items.filter(i => /^grp/.test(i.id)).every(i => !i.g), '');
+      scene.items = scene.items.filter(i => !/^grp/.test(i.id)); selIds = []; save(); draw();
+    }
 
     // escrita concorrente: o agente escreve enquanto o editor tem mudança
     // pendente; o save por diff não pode apagar o item do agente

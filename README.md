@@ -23,11 +23,12 @@ AI coding agents are great at code and blind at design. Drawrdis gives them eyes
 - **Arrow binding**: arrow ends snap to shapes and follow them when moved/resized
 - **Text containers**: resize the box and the text reflows; Alt-drag scales the font
 - Flows: Ctrl+arrows clones the element in a direction and links it with a bound arrow; Ctrl+Enter clones the whole screen/frame
+- **Grouping**: Ctrl+G groups the selection so you move and resize many elements as one; Alt+click grabs a single item inside a group
 - Live collaboration with your agent: SSE push, file-based board, MCP tools
 - **Concurrent-safe writes**: agent and human editing at the same time don't erase each other (per-item merge + a board revision number)
 - Named projects (save/open multiple boards), portable `.drawrdis` files
 - Dark theme, magnetic grid, zen mode, PNG export, drag-and-drop import of boards exported from other whiteboard apps
-- 42-test e2e harness that runs headless in CI
+- 48-test e2e harness that runs headless in CI
 
 <p align="center">
   <img src="screenshots/editor-dark.png" alt="Drawrdis in dark theme" width="720">
@@ -132,7 +133,7 @@ npm test
 ```
 
 Spawns the server on port 3999 with a throwaway board in the OS temp dir
-(never touches your `board.json`) and runs the 42-test e2e harness in headless
+(never touches your `board.json`) and runs the 48-test e2e harness in headless
 Chromium (needs Chrome/Chromium/Edge installed, or `CHROME_PATH` set).
 
 ## Architecture

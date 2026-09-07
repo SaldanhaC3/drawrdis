@@ -21,11 +21,12 @@ Agentes de código são ótimos com código e cegos em design. O Drawrdis dá ol
 - **Setas ligadas**: as pontas grudam nas formas e as acompanham ao mover/redimensionar
 - **Containers de texto**: redimensione a caixa e o texto requebra; Alt-arrasto escala a fonte
 - Fluxos: Ctrl+setas clona o elemento na direção e liga com seta; Ctrl+Enter clona a tela inteira
+- **Agrupar**: Ctrl+G agrupa a seleção para você mover e redimensionar vários elementos juntos; Alt+clique pega um item sozinho dentro do grupo
 - Colaboração com seu agente: push via SSE, quadro em arquivo, ferramentas MCP
 - **Escrita concorrente segura**: agente e humano editando ao mesmo tempo não se apagam (merge por item + número de versão do quadro)
 - Projetos nomeados (salvar/abrir vários quadros), arquivos portáteis `.drawrdis`
 - Tema escuro, grade magnética, modo zen, exportar PNG, importar quadros exportados de outros apps
-- Harness e2e de 42 testes rodando headless no CI
+- Harness e2e de 48 testes rodando headless no CI
 
 <p align="center">
   <img src="screenshots/editor-dark.png" alt="Drawrdis em tema escuro" width="720">
@@ -127,7 +128,7 @@ npm test
 ```
 
 Sobe o servidor na porta 3999 com um quadro descartável no temp do sistema
-(nunca toca no seu `board.json`) e roda o harness de 42 testes em Chromium
+(nunca toca no seu `board.json`) e roda o harness de 48 testes em Chromium
 headless (precisa de Chrome/Chromium/Edge, ou `CHROME_PATH` definido).
 
 ## Licença

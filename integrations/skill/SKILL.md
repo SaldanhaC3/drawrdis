@@ -70,7 +70,9 @@ last saw.
 `{ version:1, title, bg:null|"#hex", bgMode:"dots"|"grid"|"lines"|"plain", items:[...] }`.
 World coordinates, **y grows down**. Hex colors. Common fields: `stroke`,
 `strokeWidth` (2/4/6), `strokeStyle` ("solid"|"dashed"|"dotted"), `roughness`
-(0 straight, 1 hand-drawn, 2 scribbly), `opacity` (10-100), `angle` (radians).
+(0 straight, 1 hand-drawn, 2 scribbly), `opacity` (10-100), `angle` (radians),
+and `g` (group id — items sharing the same `g` get selected, moved and resized
+together; set `g` on several items to group them, delete it to ungroup).
 
 | type | own fields |
 |---|---|
