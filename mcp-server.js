@@ -29,19 +29,14 @@ const BOARD = process.env.DRAWRDIS_BOARD ? path.resolve(process.env.DRAWRDIS_BOA
 const PORTFILE = process.env.DRAWRDIS_PORTFILE ? path.resolve(process.env.DRAWRDIS_PORTFILE) : path.join(__dirname, '.drawrdis-port');
 
 const uid = () => crypto.randomBytes(8).toString('hex');
-const KNOWN = new Set(['rect', 'ellipse', 'diamond', 'text', 'line', 'arrow', 'draw', 'image']);
 const isFin = (v) => typeof v === 'number' && Number.isFinite(v);
-const GEOM = ['x', 'y', 'w', 'h', 'x2', 'y2', 'fontSize', 'angle', 'strokeWidth', 'opacity', 'r'];
 const badPts = (arr) => !Array.isArray(arr) || arr.some(p => !Array.isArray(p) || !isFin(p[0]) || !isFin(p[1]));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function validateItems(items) {
-  // mesmo contrato do server.js: nada não-finito entra no board.json
+  // mesmo contrato tolerante do server.js: só barra o que quebraria o render
   for (const it of items) {
-    if (!KNOWN.has(it.type)) throw new Error(`item com type desconhecido: ${it.type}`);
-    for (const k of GEOM) {
-      if (it[k] !== undefined && !isFin(it[k])) throw new Error(`item ${it.id || '?'} tem ${k} não-numérico (${it[k]})`);
-    }
+    if (!it || typeof it !== 'object') throw new Error('item não-objeto');
     if (it.points !== undefined && badPts(it.points)) throw new Error(`item ${it.id || '?'} tem points inválidas`);
     if (it.mids !== undefined && badPts(it.mids)) throw new Error(`item ${it.id || '?'} tem mids inválidas`);
   }

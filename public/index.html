@@ -906,7 +906,7 @@ function imgFor(it) {
 }
 
 function draw() {
-  if (!isFinite(z) || z <= 0) { z = 1; panX = 60; panY = 80; } // recover from NaN/Infinity
+  if (!isFinite(z) || z <= 0 || !isFinite(panX) || !isFinite(panY)) { z = 1; panX = 60; panY = 80; } // recover from NaN/Infinity
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const dark = document.body.dataset.theme === 'dark';
@@ -1189,15 +1189,21 @@ function sanitizeScene(s) {
   if (!s || typeof s !== 'object' || !Array.isArray(s.items)) {
     return { version: 1, title: (s && s.title) || 'Drawrdis', items: [] };
   }
-  const fin = (v) => typeof v === 'number' && Number.isFinite(v);
-  s.items = s.items.filter(it => it && typeof it === 'object' && fin(it.x) && fin(it.y));
+  const bad = (v) => typeof v === 'number' && !Number.isFinite(v); // só NaN/Infinity; null/string legados passam
+  const out = [];
   for (const it of s.items) {
+    if (!it || typeof it !== 'object') continue;
+    if (it.type === 'frame') it.type = 'rect'; // shim: frames do app antigo viram caixas, nada some
+    if (bad(it.x) || it.x === undefined) it.x = 0;
+    if (bad(it.y) || it.y === undefined) it.y = 0;
     for (const k of ['w', 'h', 'x2', 'y2', 'fontSize', 'angle', 'strokeWidth', 'opacity', 'r']) {
-      if (it[k] !== undefined && !fin(it[k])) delete it[k];
+      if (bad(it[k])) delete it[k];
     }
-    if (it.points !== undefined && (!Array.isArray(it.points) || it.points.some(p => !Array.isArray(p) || !fin(p[0]) || !fin(p[1])))) delete it.points;
-    if (it.mids !== undefined && (!Array.isArray(it.mids) || it.mids.some(p => !Array.isArray(p) || !fin(p[0]) || !fin(p[1])))) delete it.mids;
+    if (it.points !== undefined && (!Array.isArray(it.points) || it.points.some(p => !Array.isArray(p) || bad(p[0]) || bad(p[1])))) delete it.points;
+    if (it.mids !== undefined && (!Array.isArray(it.mids) || it.mids.some(p => !Array.isArray(p) || bad(p[0]) || bad(p[1])))) delete it.mids;
+    out.push(it);
   }
+  s.items = out;
   return s;
 }
 function applyIncoming(s) {
@@ -3480,9 +3486,11 @@ async function runTests() {
       applyIncoming({ version: 1, rev: (lastRev || 0) + 1, items: [
         { id: 'ok1', type: 'rect', x: 0, y: 0, w: 50, h: 50 },
         { id: 'bad1', type: 'rect', x: NaN, y: 0, w: 50, h: 50 },
+        { id: 'fr1', type: 'frame', x: 10, y: 10, w: 40, h: 40 },
       ] });
-      const kept = scene.items.map(i => i.id);
-      log('sanitize: item com NaN cai, resto fica', kept.includes('ok1') && !kept.includes('bad1'), kept.join(','));
+      const b1 = scene.items.find(i => i.id === 'bad1');
+      const fr = scene.items.find(i => i.id === 'fr1');
+      log('sanitize: NaN→0, frame→rect, zoom íntegro', b1 && b1.x === 0 && fr && fr.type === 'rect' && Number.isFinite(z), '');
       scene = keep; rebase(keep); draw();
     }
 

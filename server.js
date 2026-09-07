@@ -32,19 +32,16 @@ const slugify = (name) => String(name)
   .toLowerCase() || 'quadro';
 
 const uid = () => crypto.randomBytes(8).toString('hex');
-const KNOWN = new Set(['rect', 'ellipse', 'diamond', 'text', 'line', 'arrow', 'draw', 'image']);
 const isFin = (v) => typeof v === 'number' && Number.isFinite(v);
-const GEOM = ['x', 'y', 'w', 'h', 'x2', 'y2', 'fontSize', 'angle', 'strokeWidth', 'opacity', 'r'];
 const badPts = (arr) => !Array.isArray(arr) || arr.some(p => !Array.isArray(p) || !isFin(p[0]) || !isFin(p[1]));
 
 function validateItems(items) {
-  // rejeita na origem: board.json nunca guarda NaN/Infinity, então nenhum
-  // cliente (editor, agente, curl) pode travar o zoom ao carregar o quadro
+  // tolerante a dados legados (tipos antigos, campos string/null): só barra o
+  // que quebraria o render — item não-objeto e points/mids malformadas.
+  // NaN/Infinity não são representáveis em JSON, então o freeze de zoom era
+  // runtime (divisão por bbox degenerada), corrigido no editor, não aqui.
   for (const it of items) {
-    if (!KNOWN.has(it.type)) throw new Error(`item com type desconhecido: ${it.type}`);
-    for (const k of GEOM) {
-      if (it[k] !== undefined && !isFin(it[k])) throw new Error(`item ${it.id || '?'} tem ${k} não-numérico (${it[k]})`);
-    }
+    if (!it || typeof it !== 'object') throw new Error('item não-objeto');
     if (it.points !== undefined && badPts(it.points)) throw new Error(`item ${it.id || '?'} tem points inválidas`);
     if (it.mids !== undefined && badPts(it.mids)) throw new Error(`item ${it.id || '?'} tem mids inválidas`);
   }
