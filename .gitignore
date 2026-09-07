@@ -1,0 +1,8 @@
+node_modules/
+board.json
+boards/
+*.log
+_*.png
+_board_backup.json
+.drawrdis-port
+.DS_Store

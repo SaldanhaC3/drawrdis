@@ -1,0 +1,13 @@
+{
+  "name": "drawrdis",
+  "version": "0.1.0",
+  "description": "Local-first, hand-drawn-style whiteboard built for human + AI collaboration. Your agent reads and draws on the board via MCP. Zero runtime dependencies.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node scripts/run-tests.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
