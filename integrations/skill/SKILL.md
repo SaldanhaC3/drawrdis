@@ -22,18 +22,28 @@ shared paper for thinking through interfaces before coding.
 ## How to connect (3 ways, best first)
 
 1. **MCP**: if registered in the client config, tools load automatically:
-   `drawrdis_get_scene` (`{format:"summary"|"json"}` — the summary includes
-   `rev`, the board's version number), `drawrdis_add_items` (`{items:[...]}`),
-   `drawrdis_update_items` (`{items:[patches with id]}`),
+   `drawrdis_get_scene` (`{format:"summary"|"json", since:rev}` — the summary
+   includes `rev`, the board's version number; `since` returns only what
+   changed), `drawrdis_add_items` (`{items:[...]}`),
+   `drawrdis_update_items` (`{items:[patches with id]}` — field-level merge),
    `drawrdis_delete_items` (`{ids:[...]}`), `drawrdis_replace_scene`
    (`{title, items, rev}` — destructive, needs the `rev` you read, avoid),
    `drawrdis_wait_for_change` (`{rev, timeoutMs}` — blocks until the human
-   edits), `drawrdis_render` (`{w,h}` — returns the board as a PNG image).
-2. **Local HTTP** (if the server is running): `GET /scene`, `POST /sync`
-   (per-item merge `{add,update,remove,order}` — safe against concurrent
-   edits), `POST /scene` (replaces EVERYTHING; `?rev=N` rejects stale writes),
-   `POST /items` (append), `DELETE /items/:id`, `GET /wait?rev=N&timeout=ms`
-   (long-poll), `GET /events` (SSE). Named projects: `GET /boards`,
+   edits, returns the changed `ids`), `drawrdis_layout`
+   (`{ids, op, gap}` — align/distribute/place-right/grid),
+   `drawrdis_user_state` (`{}` — the human's current selection + viewport),
+   `drawrdis_render` (`{w,h,ids,bbox}` — returns the board (or a crop) as a
+   PNG image).
+2. **Local HTTP** (if the server is running): `GET /scene`, `GET /scene?since=N`
+   (diff), `POST /sync` (per-item merge `{add,update,remove,order,merge}` —
+   with `merge:true`, `update` entries are field patches, `null` deletes a
+   field), `POST /scene?rev=N` (replaces EVERYTHING; rev required, auto-saves a
+   snapshot first), `POST /items` (append), `DELETE /items/:id`,
+   `GET /wait?rev=N&timeout=ms` (long-poll, returns changed ids),
+   `GET /events` (SSE: `ops` diff events, `scene` full fallback),
+   `POST /img` `{data:dataURL}` → `{src:"/img/<hash>.png"}`,
+   `POST /layout` `{ids,op,gap}`, `GET|POST /state`, `GET /history`,
+   `POST /history/revert`. Named projects: `GET /boards`,
    `GET|POST|DELETE /boards/:slug`.
    Saving a project does NOT touch the live board (`board.json`).
 3. **File**: read/write `board.json` next to `server.js` directly. Any file
@@ -46,24 +56,37 @@ If the user says the tab is not open: ask them to run the launcher
 
 Always start with `format:"summary"` — a `rev` line plus one line per item
 (`id  type  @x,y  w×h  "text"`). Use `format:"json"` only when you need
-styles/curves/bindings. HTTP equivalent: `GET /scene`. To follow the human's
-edits without re-reading, call `drawrdis_wait_for_change` with the `rev` you
-last saw.
+styles/curves/bindings. To follow the human's edits without re-reading
+everything: call `drawrdis_wait_for_change` with the `rev` you last saw — it
+returns the changed `ids` — then `get_scene` with `since=that rev` to fetch
+only what moved. `drawrdis_user_state` tells you what the human has selected
+and which region they're looking at; use it before "fix this here" and pass
+their `view` as `bbox` to `drawrdis_render` to see their exact crop.
 
 ## Writing (safety rules)
 
 1. **Read before writing.** The board often has hundreds of user items.
 2. To add content prefer `drawrdis_add_items` / `POST /items` — no risk of
-   erasing the user's fresh work. All writes are per-item merges: if the
-   user draws while you write, neither of you loses items.
+   erasing the user's fresh work. To change an item prefer
+   `drawrdis_update_items` with **only the fields you mean to change**
+   (`{id, fill}`): the server merges it field-by-field, so if the user moved
+   the item between your read and your patch, their position survives.
+   Sending whole items is what caused lost updates before; don't.
 3. `POST /scene` / `replace_scene` **replace the whole board**: only for full
    imports. `replace_scene` requires the `rev` you read — if the board moved
    since, the call fails and you must re-read first. Confirm with the user.
+   The server snapshots the old state to `boards/_history` before replacing.
 4. **Never delete user items without asking.** Agent writes bypass the
    editor's local undo, so mistakes are expensive.
-5. Every write appears **on the user's screen in <1s** — they are watching.
-6. Keep the previous JSON before overwriting (`GET /scene`), so you can
-   restore.
+5. Every write appears **on the user's screen in <1s** and your items flash
+   in a colored outline — they are watching you draw. Keep one
+   `add_items`/`update_items` call per logical piece (one screen, one fix) so
+   the flash reads as intentional strokes, not a data dump.
+6. Items you add or patch are stamped `by:"agent"`; the human's edits are
+   stamped `by:"user"`. Use this to tell your work apart from theirs when
+   reviewing the board.
+7. Images: never paste big base64 dataURLs into items. Send the dataURL to
+   `POST /img` and put the returned `/img/<hash>.png` URL in `src`.
 
 ## Scene schema
 
@@ -71,8 +94,12 @@ last saw.
 World coordinates, **y grows down**. Hex colors. Common fields: `stroke`,
 `strokeWidth` (2/4/6), `strokeStyle` ("solid"|"dashed"|"dotted"), `roughness`
 (0 straight, 1 hand-drawn, 2 scribbly), `opacity` (10-100), `angle` (radians),
-and `g` (group id — items sharing the same `g` get selected, moved and resized
-together; set `g` on several items to group them, delete it to ungroup).
+`g` (group id — items sharing the same `g` get selected, moved and resized
+together; set `g` on several items to group them, delete it to ungroup),
+`by` ("user"|"agent" — who last edited it; the server stamps it for you),
+`link` (`{to:"<itemId>"}` — in present mode (Alt+P) clicking this item jumps
+the camera to that item/group: wire the prototype with one `update_items`),
+and `locked` (true = the human froze it; don't move or delete locked items).
 
 | type | own fields |
 |---|---|
@@ -82,7 +109,7 @@ together; set `g` on several items to group them, delete it to ungroup).
 | `text` | `x,y,text`, `fontSize`, `bold`, `fontFamily` ("hand"|"normal"|"code"), `textAlign`, `w` (container; text wraps), `autoW:true` grows with text |
 | `line`/`arrow` | `x,y,x2,y2`, `mids:[[x,y],...]` curve points, `startBind:{id}`, `endBind:{id}` |
 | `draw` | `points:[[x,y],...]` freehand |
-| `image` | `x,y,w,h`, `src` (dataURL) |
+| `image` | `x,y,w,h`, `src` (URL `/img/<hash>.png` preferred — get it via `POST /img`; dataURL still works but bloats the board file) |
 
 **Bound arrows**: with `startBind`/`endBind` set to a shape's `id`, the end
 recalculates on the shape's border (toward the other end) whenever the shape
@@ -102,13 +129,11 @@ moves/resizes. Deleting the shape releases the arrow.
 
 ### New content without overlapping anything
 
-Read the scene, compute the bbox of everything, place to the right:
-
-```js
-let maxX = -1e9, minY = 1e9;
-for (const it of scene.items) { /* bbox per item */ maxX = Math.max(maxX, b.bx+b.w); minY = Math.min(minY, b.by); }
-// new content starts at x = maxX + 160, y = minY
-```
+Don't compute bboxes by hand. Add the items anywhere (e.g. at 0,0 with their
+relative layout), then call `drawrdis_layout` with `{ids:[...your new items],
+op:"place-right"}` — the server moves the whole group to the right of every
+other item on the board, preserving your relative layout. `op:"grid"` tidies
+a set into a grid; `align-*`/`distribute-*` straighten rows and columns.
 
 ### A new screen (consistent style)
 
@@ -129,6 +154,21 @@ Arrow with binding from source element to destination:
 
 Ends snap to borders and follow shapes. (The user does this with
 Ctrl+arrows / Ctrl+Enter in the editor.)
+
+### Clickable prototype (present mode)
+
+Arrows show the flow to a human; `link` makes it clickable. One
+`update_items` patch on the button:
+
+```json
+{"id":"<button id>","link":{"to":"<destination frame id>"}}
+```
+
+The destination is usually a screen's frame rect (any item works; the camera
+jumps to its group box). The human presses Alt+P to present and clicks
+through the prototype; linked items carry a small blue dot in edit mode.
+When you review a board, check that every primary action has a `link` or a
+bound arrow to a real destination.
 
 ## Drawing well: clear, legible diagrams
 
@@ -200,6 +240,10 @@ When asked to review (or after drawing):
   at it before saying done: overlaps, alignment and legibility are only
   visible in the render, not in the JSON. Needs the server running and a
   Chrome/Edge installed.
+- Render in crops, not whole: on a board with hundreds of items the full PNG
+  is illegible. Pass `ids` (the frame you just drew — its group comes along)
+  or `bbox` (e.g. the human's `view` from `drawrdis_user_state`) and read the
+  close-up.
 - `GET /?test=1` — built-in e2e harness (synthetic events, PASS/FAIL report
   in the DOM). Run it after touching any editor code.
-- After writing, re-read the scene and verify counts/positions.
+- After writing, re-read the scene (or `since=rev`) and verify counts/positions.

@@ -22,11 +22,16 @@ Agentes de código são ótimos com código e cegos em design. O Drawrdis dá ol
 - **Containers de texto**: redimensione a caixa e o texto requebra; Alt-arrasto escala a fonte
 - Fluxos: Ctrl+setas clona o elemento na direção e liga com seta; Ctrl+Enter clona a tela inteira
 - **Agrupar**: Ctrl+G agrupa a seleção para você mover e redimensionar vários elementos juntos; Alt+clique pega um item sozinho dentro do grupo
-- Colaboração com seu agente: push via SSE, quadro em arquivo, ferramentas MCP
-- **Escrita concorrente segura**: agente e humano editando ao mesmo tempo não se apagam (merge por item + número de versão do quadro)
+- **Presença do agente**: cada item registra quem o editou por último (`by`), itens que o agente escreve piscam na sua tela e um aviso diz "o agente editou N itens" no momento em que acontece
+- **Links de navegação + modo apresentação**: selecione um elemento, Ctrl+L, clique no destino; Alt+P apresenta o protótipo com clique que salta de tela (o agente liga os mesmos fluxos com um único `update_items`)
+- Busca (Ctrl+F), trava de objeto (Ctrl+Shift+L), histórico automático com restaurar em um clique
+- Colaboração com seu agente: push via SSE (diffs incrementais), quadro em arquivo, ferramentas MCP
+- **Escrita concorrente segura**: agente e humano editando ao mesmo tempo não se apagam (merge por item, patch de campos, número de versão do quadro e um undo cirúrgico que nunca desfaz o trabalho do agente)
 - Projetos nomeados (salvar/abrir vários quadros), arquivos portáteis `.drawrdis`
-- Tema escuro, grade magnética, modo zen, exportar PNG, importar quadros exportados de outros apps
-- Harness e2e de 48 testes rodando headless no CI
+- Tema escuro, grade magnética, modo zen, interface PT/EN (toggle no menu)
+- Exportar PNG, SVG e Excalidraw; arraste-e-solte importa quadros de outros apps
+- Imagens guardadas como arquivos em `files/`, para o `board.json` continuar leve
+- Harness e2e de 70 testes rodando headless no CI
 
 <p align="center">
   <img src="screenshots/editor-dark.png" alt="Drawrdis em tema escuro" width="720">
@@ -74,19 +79,21 @@ bin/drawrdis.sh      # macOS / Linux
 }
 ```
 
-O agente recebe sete ferramentas:
+O agente recebe nove ferramentas:
 
 | ferramenta | o que faz |
 |---|---|
-| `drawrdis_get_scene` | lê o quadro (`summary` ou `json` completo; traz a `rev`) |
-| `drawrdis_add_items` | acrescenta formas/texto/setas |
-| `drawrdis_update_items` | ajusta itens por id (merge, não toca no resto) |
+| `drawrdis_get_scene` | lê o quadro (`summary` ou `json` completo; traz a `rev`) ou, com `since=N`, só o que mudou desde a rev N |
+| `drawrdis_add_items` | acrescenta formas/texto/setas (marca `by:"agent"`, para você ver piscando) |
+| `drawrdis_update_items` | patch de campos por id (só os campos enviados mudam; `null` apaga um campo) |
 | `drawrdis_delete_items` | remove itens por id |
-| `drawrdis_replace_scene` | apaga e reescreve o quadro todo (exige a `rev` lida) |
-| `drawrdis_wait_for_change` | bloqueia até o humano mexer no quadro |
-| `drawrdis_render` | devolve o quadro em PNG, para o agente ver o que desenhou |
+| `drawrdis_replace_scene` | apaga e reescreve o quadro todo (exige a `rev` lida; tira snapshot antes) |
+| `drawrdis_wait_for_change` | bloqueia até o humano mexer no quadro; devolve os ids que mudaram |
+| `drawrdis_layout` | alinhar / distribuir / colocar-à-direita / grade, calculados no servidor (o agente não faz conta de pixel) |
+| `drawrdis_user_state` | o que o humano está vendo agora: seleção + viewport |
+| `drawrdis_render` | devolve o quadro em PNG, inteiro ou recortado por `ids`/`bbox` para um close legível |
 
-Toda escrita é merge por item sobre o estado atual, então agente e você podem editar juntos sem um apagar o outro. Uma skill de agente já vem pronta ensinando a esboçar bem (espaçamento, rótulos, callouts, fluxos) e a conferir o próprio trabalho renderizando: [`integrations/skill/SKILL.md`](integrations/skill/SKILL.md).
+Toda escrita é merge por item sobre o estado atual, então agente e você podem editar juntos sem um apagar o outro: um patch de `{fill}` do agente não reverte um movimento que você fez um segundo antes, e seu Ctrl+Z desfaz só os seus itens. Uma skill de agente já vem pronta ensinando a esboçar bem (espaçamento, rótulos, callouts, fluxos) e a conferir o próprio trabalho renderizando: [`integrations/skill/SKILL.md`](integrations/skill/SKILL.md).
 
 Sem MCP? O quadro é o `board.json` ao lado do `server.js`. Qualquer agente que lê e escreve arquivos colabora.
 
@@ -128,7 +135,7 @@ npm test
 ```
 
 Sobe o servidor na porta 3999 com um quadro descartável no temp do sistema
-(nunca toca no seu `board.json`) e roda o harness de 48 testes em Chromium
+(nunca toca no seu `board.json`) e roda o harness de 70 testes em Chromium
 headless (precisa de Chrome/Chromium/Edge, ou `CHROME_PATH` definido).
 
 ## Licença

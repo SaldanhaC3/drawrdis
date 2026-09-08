@@ -2,13 +2,22 @@
 //
 // Rotas:
 //   GET  /                → editor (public/index.html, lido a cada request)
-//   GET  /scene           → quadro em JSON (inclui rev, o número da versão)
-//   POST /scene           → substitui o quadro inteiro (409 se ?rev=N não bater)
-//   POST /sync            → aplica diff por item {add,update,remove,order}; merge seguro com o agente
+//   GET  /scene           → quadro em JSON (inclui rev); ?since=N → só o que mudou desde N
+//   POST /scene           → substitui o quadro inteiro (exige ?rev=N; 409 se não bater)
+//   POST /sync            → diff por item {add,update,remove,order,merge}; merge=true
+//                           trata update como patch de campos (null apaga o campo)
 //   POST /items           → adiciona item (objeto) ou itens (array)
 //   DELETE /items/<id>    → remove item pelo id
-//   GET  /wait            → long-poll ?rev=N&timeout=ms; resolve quando a rev mudar
-//   GET  /events          → SSE; avisa quando board.json muda
+//   GET  /wait            → long-poll ?rev=N&timeout=ms; resolve com {changed, rev, ids}
+//   GET  /events          → SSE; eventos `ops` (diff) ou `scene` (completo, fallback)
+//   POST /img             → externaliza dataURL → files/<hash>; devolve {src}
+//   GET  /img/<arquivo>   → serve a imagem externalizada
+//   POST /migrate-images  → move todos os dataURL do quadro para files/
+//   POST /state           → editor publica seleção/viewport do humano
+//   GET  /state           → agente lê o que o humano está vendo/marcando
+//   POST /layout          → align/distribute/place/grid por ids (servidor calcula)
+//   GET  /history         → snapshots automáticos (boards/_history)
+//   POST /history/revert  → restaura um snapshot
 //
 // O quadro vive em board.json (ou DRAWRDIS_BOARD). Toda escrita incrementa
 // `rev` e é feita via tmp+rename (leitores nunca veem JSON pela metade).
@@ -23,6 +32,8 @@ const crypto = require('crypto');
 const ROOT = __dirname;
 const BOARD = process.env.DRAWRDIS_BOARD ? path.resolve(process.env.DRAWRDIS_BOARD) : path.join(ROOT, 'board.json');
 const BOARDS_DIR = path.join(path.dirname(BOARD), 'boards');
+const FILES_DIR = path.join(path.dirname(BOARD), 'files');
+const HIST_DIR = path.join(BOARDS_DIR, '_history');
 const INDEX = path.join(ROOT, 'public', 'index.html');
 const PORTFILE = process.env.DRAWRDIS_PORTFILE ? path.resolve(process.env.DRAWRDIS_PORTFILE) : path.join(ROOT, '.drawrdis-port');
 
@@ -54,6 +65,70 @@ function frame(x, label) {
   ];
 }
 
+/* ---------- geometria para o /layout (espelha o itemBox/rotAABB do editor) ---------- */
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+function rotAabbOf(x, y, w, h, a) {
+  if (!a) return { bx: x, by: y, w, h };
+  const cx = x + w / 2, cy = y + h / 2, c = Math.cos(a), s = Math.sin(a);
+  let x0 = 1e18, y0 = 1e18, x1 = -1e18, y1 = -1e18;
+  for (const [px, py] of [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]) {
+    const dx = px - cx, dy = py - cy;
+    const qx = cx + dx * c - dy * s, qy = cy + dx * s + dy * c;
+    x0 = Math.min(x0, qx); y0 = Math.min(y0, qy); x1 = Math.max(x1, qx); y1 = Math.max(y1, qy);
+  }
+  return { bx: x0, by: y0, w: x1 - x0, h: y1 - y0 };
+}
+function bboxOf(it) {
+  if (it.type === 'line' || it.type === 'arrow') {
+    const pts = [[it.x, it.y], [it.x2, it.y2], ...(Array.isArray(it.mids) ? it.mids : [])].filter(p => fin(p[0]) && fin(p[1]));
+    if (!pts.length) return null;
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    return { bx: Math.min(...xs), by: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+  }
+  if (it.type === 'draw') {
+    const pts = (it.points || []).filter(p => Array.isArray(p) && fin(p[0]) && fin(p[1]));
+    if (!pts.length) return null;
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    return { bx: Math.min(...xs), by: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+  }
+  if (it.type === 'text') {
+    const fs = fin(it.fontSize) ? it.fontSize : 14;
+    // sem o canvas aqui, largura de texto autoW é estimada; suficiente para alinhar
+    const w = fin(it.w) ? it.w : String(it.text || '').length * fs * 0.55;
+    const lines = String(it.text || '').split('\n').length;
+    return rotAabbOf(fin(it.x) ? it.x : 0, fin(it.y) ? it.y : 0, w, fs * 1.3 * lines, it.angle || 0);
+  }
+  if (fin(it.x) && fin(it.y) && fin(it.w) && fin(it.h)) return rotAabbOf(it.x, it.y, it.w, it.h, it.angle || 0);
+  return null;
+}
+function shiftIt(it, dx, dy) {
+  if (fin(it.x)) it.x += dx;
+  if (fin(it.y)) it.y += dy;
+  if (fin(it.x2)) it.x2 += dx;
+  if (fin(it.y2)) it.y2 += dy;
+  if (Array.isArray(it.points)) for (const p of it.points) { p[0] += dx; p[1] += dy; }
+  if (Array.isArray(it.mids)) for (const p of it.mids) { p[0] += dx; p[1] += dy; }
+}
+
+/* ---------- imagens externalizadas ---------- */
+// dataURL dentro do item é o que estoura o board.json (3 MB de base64 reescrito
+// a cada operação). /img guarda o binário em files/<sha1> e o item fica só com
+// a URL. O editor aceita os dois formatos, então dados antigos continuam vivos.
+const IMG_EXT = { png: 'png', jpeg: 'jpg', jpg: 'jpg', gif: 'gif', webp: 'webp', 'svg+xml': 'svg' };
+const IMG_MIME = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' };
+function externalizeDataUrl(dataUrl) {
+  const m = /^data:image\/(png|jpeg|jpg|gif|webp|svg\+xml);base64,([A-Za-z0-9+/=\s]+)$/.exec(String(dataUrl || ''));
+  if (!m) throw new Error('dataURL de imagem inválido');
+  const buf = Buffer.from(m[2].replace(/\s/g, ''), 'base64');
+  if (!buf.length) throw new Error('imagem vazia');
+  const ext = IMG_EXT[m[1]];
+  const name = crypto.createHash('sha1').update(buf).digest('hex') + '.' + ext;
+  fs.mkdirSync(FILES_DIR, { recursive: true });
+  const f = path.join(FILES_DIR, name);
+  if (!fs.existsSync(f)) fs.writeFileSync(f, buf);
+  return { src: '/img/' + name, bytes: buf.length };
+}
+
 const buildSeed = () => ({
   version: 1,
   title: 'Drawrdis',
@@ -68,14 +143,57 @@ const SEED = buildSeed();
 
 let lastGood = null;
 
+// opsLog: anel das últimas escritas ({rev, add, update, remove} por id). É o que
+// permite leitura incremental (GET /scene?since=N), ids no /wait e diff no SSE
+// sem guardar histórico completo. Perde-se no restart; quem pedir uma rev
+// antiga recebe truncated:true e cai para a leitura cheia.
+const opsLog = [];
+const OPSLOG_MAX = 300;
+
+function diffScenes(prev, next) {
+  const before = new Map(prev.items.map(i => [i.id, JSON.stringify(i)]));
+  const add = [], update = [];
+  const seen = new Set();
+  for (const it of next.items) {
+    seen.add(it.id);
+    const b = before.get(it.id);
+    if (b === undefined) add.push(it);
+    else if (b !== JSON.stringify(it)) update.push(it);
+  }
+  const remove = [...before.keys()].filter(id => !seen.has(id));
+  return { add, update, remove };
+}
+
+function changedSince(sinceRev) {
+  const cur = readBoard();
+  const rev = cur ? (cur.rev || 0) : 0;
+  if (!cur || sinceRev >= rev) return { rev, since: sinceRev, changed: [], removed: [], truncated: false };
+  const oldest = opsLog.length ? opsLog[0].rev : rev + 1;
+  if (sinceRev < oldest - 1) return { rev, since: sinceRev, truncated: true };
+  const state = new Map();
+  for (const e of opsLog) {
+    if (e.rev <= sinceRev) continue;
+    for (const id of e.add) state.set(id, 'c');
+    for (const id of e.update) state.set(id, 'c');
+    for (const id of e.remove) state.set(id, 'r');
+  }
+  const byId = new Map(cur.items.map(i => [i.id, i]));
+  const changed = [], removed = [];
+  for (const [id, st] of state) {
+    if (st === 'r') { if (!byId.has(id)) removed.push(id); }
+    else if (byId.has(id)) changed.push(byId.get(id));
+  }
+  return { rev, since: sinceRev, changed, removed, truncated: false };
+}
+
 // waiters do long-poll /wait: resolvidos quando a rev passa da esperada
 const waiters = new Set();
-function flushWaiters(rev) {
+function flushWaiters(rev, ids) {
   for (const w of [...waiters]) {
     if (rev > w.minRev) {
       waiters.delete(w);
       clearTimeout(w.timer);
-      try { w.done({ changed: true, rev }); } catch { /* cliente já foi */ }
+      try { w.done({ changed: true, rev, ids }); } catch { /* cliente já foi */ }
     }
   }
 }
@@ -91,24 +209,68 @@ function readBoard() {
   }
 }
 
+// snapshot automático em boards/_history: rede de segurança para escrita
+// destrutiva (replace total) e para o diálogo "Histórico…" do editor.
+function snapshotHistory(scene, tag) {
+  try {
+    fs.mkdirSync(HIST_DIR, { recursive: true });
+    fs.writeFileSync(path.join(HIST_DIR, `rev${String(scene.rev).padStart(6, '0')}-${tag || 'auto'}.json`), JSON.stringify(scene));
+    const list = fs.readdirSync(HIST_DIR).filter(x => x.endsWith('.json')).sort();
+    while (list.length > 20) { try { fs.unlinkSync(path.join(HIST_DIR, list.shift())); } catch { /* ok */ } }
+  } catch { /* histórico é conveniência; nunca derruba um save por causa dele */ }
+}
+
 function writeBoard(scene) {
   if (!Array.isArray(scene.items)) throw new Error('quadro inválido: items ausente');
   validateItems(scene.items);
   scene.rev = ((lastGood && lastGood.rev) || 0) + 1;
   lastGood = scene;
+  // O diff é contra o índice da última ESCRITA (não contra lastGood): as rotas
+  // mutam o objeto que readBoard devolve, e readBoard atualiza lastGood — a
+  // comparação sairia sempre idêntica.
+  const idx = new Map(scene.items.map(i => [i.id, JSON.stringify(i)]));
+  let touched = [];
+  if (writtenIndex) {
+    const add = [], update = [], remove = [];
+    for (const [id, j] of idx) {
+      const b = writtenIndex.get(id);
+      if (b === undefined) add.push(id);
+      else if (b !== j) update.push(id);
+    }
+    for (const id of writtenIndex.keys()) if (!idx.has(id)) remove.push(id);
+    touched = [...add, ...update, ...remove];
+    opsLog.push({ rev: scene.rev, add, update, remove });
+    while (opsLog.length > OPSLOG_MAX) opsLog.shift();
+  }
+  writtenIndex = idx;
   // tmp + rename: escrita atômica, nenhum leitor vê JSON pela metade
   const tmp = BOARD + '.' + process.pid + '.' + crypto.randomBytes(3).toString('hex') + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(scene, null, 2));
   fs.renameSync(tmp, BOARD);
-  flushWaiters(scene.rev);
+  if (scene.rev % 20 === 0) snapshotHistory(scene);
+  flushWaiters(scene.rev, touched);
 }
 
+let writtenIndex = null;
 if (!readBoard()) writeBoard(SEED);
+else writtenIndex = new Map(lastGood.items.map(i => [i.id, JSON.stringify(i)]));
 
 const clients = new Set();
 
+// SSE incremental: quando a mudança é pequena, manda só o diff (evento `ops`);
+// o cliente aplica por id. Em mudanças grandes (replace, import) manda a cena.
+let lastSent = null;
 function broadcast(scene) {
-  const payload = `event: scene\ndata: ${JSON.stringify(scene)}\n\n`;
+  if (!scene) return;
+  if (lastSent && lastSent.rev === scene.rev) return; // essa versão já saiu (rota + watch)
+  let payload;
+  if (lastSent && Array.isArray(lastSent.items)) {
+    const d = diffScenes(lastSent, scene);
+    const n = d.add.length + d.update.length + d.remove.length;
+    if (n > 0 && n <= 150) payload = `event: ops\ndata: ${JSON.stringify({ rev: scene.rev, ops: d })}\n\n`;
+  }
+  if (!payload) payload = `event: scene\ndata: ${JSON.stringify(scene)}\n\n`;
+  lastSent = scene;
   for (const res of clients) {
     try { res.write(payload); } catch { clients.delete(res); }
   }
@@ -130,6 +292,9 @@ setInterval(() => {
     try { res.write(': ping\n\n'); } catch { clients.delete(res); }
   }
 }, 25000).unref();
+
+// o que o humano está vendo/marcando agora. Não persiste: é presença, não cena.
+let userState = { sel: [], view: null, at: 0 };
 
 function readBody(req) {
   return new Promise((resolve, reject) => {
@@ -172,8 +337,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/scene') {
+      const since = url.searchParams.get('since');
+      const out = since !== null ? changedSince(Number(since) || 0) : (readBoard() ?? SEED);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify(readBoard() ?? SEED));
+      res.end(JSON.stringify(out));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/events') {
@@ -195,7 +362,12 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(obj));
       };
       const cur = readBoard();
-      if (cur && (cur.rev || 0) > minRev) { sendJson({ changed: true, rev: cur.rev }); return; }
+      if (cur && (cur.rev || 0) > minRev) {
+        const cs = changedSince(minRev);
+        const ids = cs.truncated ? undefined : [...cs.changed.map(i => i.id), ...cs.removed];
+        sendJson({ changed: true, rev: cur.rev, ids });
+        return;
+      }
       const w = {
         minRev,
         done: sendJson,
@@ -212,14 +384,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/scene') {
       const scene = JSON.parse(await readBody(req));
       const expect = url.searchParams.get('rev');
-      if (expect !== null) {
-        const cur = readBoard();
-        if (!cur || (cur.rev || 0) !== Number(expect)) {
-          res.writeHead(409, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ erro: 'rev desatualizada', rev: cur ? (cur.rev || 0) : 0 }));
-          return;
-        }
+      // substituição total é a única rota destrutiva: exige a rev lida e tira
+      // um snapshot do estado atual antes de gravar. Sem isso, uma chamada
+      // errada de agente apagaria o quadro sem rede de segurança.
+      if (expect === null) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ erro: 'POST /scene exige ?rev=N; leia GET /scene primeiro' }));
+        return;
       }
+      const cur = readBoard();
+      if (!cur || (cur.rev || 0) !== Number(expect)) {
+        res.writeHead(409, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ erro: 'rev desatualizada', rev: cur ? (cur.rev || 0) : 0 }));
+        return;
+      }
+      if (cur) snapshotHistory(cur, 'pre-replace');
       writeBoard(scene);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
@@ -232,7 +411,19 @@ const server = http.createServer(async (req, res) => {
       for (const id of body.remove || []) byId.delete(String(id));
       for (const it of body.update || []) {
         if (!it || !it.id) throw new Error('update sem id');
-        byId.set(String(it.id), it);
+        if (body.merge) {
+          // patch de campos: só o que o agente mandou muda. Se o humano moveu o
+          // item entre a leitura e o patch do agente, x/y dele sobrevivem.
+          // null num campo apaga o campo (merge raso não expressa "delete").
+          const ex = byId.get(String(it.id));
+          if (!ex) throw new Error(`update: id ${it.id} não existe`);
+          const merged = Object.assign({}, ex);
+          for (const [k, v] of Object.entries(it)) {
+            if (k === 'id') continue;
+            if (v === null) delete merged[k]; else merged[k] = v;
+          }
+          byId.set(String(it.id), merged);
+        } else byId.set(String(it.id), it);
       }
       for (const it of body.add || []) {
         if (!it || !it.id) throw new Error('add sem id');
@@ -325,6 +516,151 @@ const server = http.createServer(async (req, res) => {
       writeBoard(scene);
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{"ok":true}');
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/img') {
+      const body = JSON.parse(await readBody(req));
+      const r = externalizeDataUrl(body.data);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(r));
+      return;
+    }
+    const imgGet = req.method === 'GET' && url.pathname.match(/^\/img\/([a-f0-9]{40}\.(?:png|jpg|gif|webp|svg))$/);
+    if (imgGet) {
+      const f = path.join(FILES_DIR, imgGet[1]);
+      if (!fs.existsSync(f)) { res.writeHead(404); res.end('não encontrada'); return; }
+      res.writeHead(200, {
+        'content-type': IMG_MIME[imgGet[1].split('.')[1]] || 'application/octet-stream',
+        'cache-control': 'public, max-age=31536000, immutable',
+      });
+      res.end(fs.readFileSync(f));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/migrate-images') {
+      const scene = readBoard();
+      if (!scene) throw new Error('quadro ilegível');
+      let moved = 0, saved = 0;
+      for (const it of scene.items) {
+        if (it.type !== 'image' || typeof it.src !== 'string' || !it.src.startsWith('data:image/')) continue;
+        try {
+          const r = externalizeDataUrl(it.src);
+          saved += it.src.length - r.src.length;
+          it.src = r.src;
+          moved++;
+        } catch { /* dataURL que o servidor não entende: deixa como está */ }
+      }
+      if (moved) writeBoard(scene);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, moved, savedBytes: saved, rev: scene.rev }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/state') {
+      const body = JSON.parse(await readBody(req));
+      const sel = Array.isArray(body.sel) ? body.sel.map(String).slice(0, 200) : [];
+      const v = body.view;
+      const view = v && fin(v.x) && fin(v.y) && fin(v.w) && fin(v.h)
+        ? { x: v.x, y: v.y, w: v.w, h: v.h, z: fin(v.z) ? v.z : 1 } : null;
+      userState = { sel, view, at: Date.now() };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"ok":true}');
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/state') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(userState));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/layout') {
+      const body = JSON.parse(await readBody(req));
+      const scene = readBoard();
+      if (!scene) throw new Error('quadro ilegível');
+      const ids = new Set((Array.isArray(body.ids) ? body.ids : []).map(String));
+      const sel = scene.items.filter(i => ids.has(i.id));
+      if (sel.length < 2 && body.op !== 'place-right' && body.op !== 'grid') throw new Error('layout precisa de 2+ ids');
+      const boxes = sel.map(i => ({ it: i, b: bboxOf(i) })).filter(e => e.b);
+      if (!boxes.length) throw new Error('nenhum item com caixa resolvível');
+      const gap = fin(body.gap) ? body.gap : 40;
+      const op = body.op;
+      if (op === 'align-left' || op === 'align-right' || op === 'align-hcenter') {
+        const x0 = Math.min(...boxes.map(e => e.b.bx));
+        const x1 = Math.max(...boxes.map(e => e.b.bx + e.b.w));
+        for (const e of boxes) {
+          const t = op === 'align-left' ? x0 : op === 'align-right' ? x1 - e.b.w : (x0 + x1) / 2 - e.b.w / 2;
+          shiftIt(e.it, t - e.b.bx, 0);
+        }
+      } else if (op === 'align-top' || op === 'align-bottom' || op === 'align-vcenter') {
+        const y0 = Math.min(...boxes.map(e => e.b.by));
+        const y1 = Math.max(...boxes.map(e => e.b.by + e.b.h));
+        for (const e of boxes) {
+          const t = op === 'align-top' ? y0 : op === 'align-bottom' ? y1 - e.b.h : (y0 + y1) / 2 - e.b.h / 2;
+          shiftIt(e.it, 0, t - e.b.by);
+        }
+      } else if (op === 'distribute-h' || op === 'distribute-v') {
+        const horiz = op === 'distribute-h';
+        boxes.sort((a, b) => (horiz ? a.b.bx - b.b.bx : a.b.by - b.b.by));
+        const first = boxes[0].b, last = boxes[boxes.length - 1].b;
+        const span = (horiz ? last.bx + last.w - first.bx : last.by + last.h - first.by);
+        const sum = boxes.reduce((s, e) => s + (horiz ? e.b.w : e.b.h), 0);
+        let cursor = horiz ? first.bx : first.by;
+        const step = boxes.length > 1 ? (span - sum) / (boxes.length - 1) : 0;
+        for (const e of boxes) {
+          const pos = horiz ? e.b.bx : e.b.by;
+          shiftIt(e.it, horiz ? cursor - pos : 0, horiz ? 0 : cursor - pos);
+          cursor += (horiz ? e.b.w : e.b.h) + step;
+        }
+      } else if (op === 'place-right') {
+        // move a seleção para a direita de tudo que NÃO está selecionado,
+        // preservando o layout relativo. É o "sem sobreposição" que o skill
+        // hoje manda o agente calcular à mão.
+        const others = scene.items.filter(i => !ids.has(i.id)).map(bboxOf).filter(Boolean);
+        const sel0 = Math.min(...boxes.map(e => e.b.bx));
+        const targetX = others.length ? Math.max(...others.map(b => b.bx + b.w)) + gap : sel0;
+        const dx = targetX - sel0;
+        if (dx !== 0) for (const e of boxes) shiftIt(e.it, dx, 0);
+      } else if (op === 'grid') {
+        const cols = Math.ceil(Math.sqrt(boxes.length));
+        const cw = Math.max(...boxes.map(e => e.b.w)) + gap;
+        const ch = Math.max(...boxes.map(e => e.b.h)) + gap;
+        const x0 = Math.min(...boxes.map(e => e.b.bx));
+        const y0 = Math.min(...boxes.map(e => e.b.by));
+        boxes.forEach((e, i) => {
+          shiftIt(e.it, x0 + (i % cols) * cw - e.b.bx, y0 + Math.floor(i / cols) * ch - e.b.by);
+        });
+      } else {
+        throw new Error('op inválida: use align-left/right/top/bottom/hcenter/vcenter, distribute-h/v, place-right, grid');
+      }
+      writeBoard(scene);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, rev: scene.rev, moved: boxes.length }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/history') {
+      let list = [];
+      try {
+        list = fs.readdirSync(HIST_DIR).filter(x => /^rev\d+-[\w-]+\.json$/.test(x)).sort().map(x => {
+          const st = fs.statSync(path.join(HIST_DIR, x));
+          const m = /^rev(\d+)-([\w-]+)\.json$/.exec(x);
+          return { file: x, rev: +m[1], tag: m[2], date: st.mtime.toISOString(), bytes: st.size };
+        }).reverse();
+      } catch { /* sem histórico ainda */ }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify(list));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/history/revert') {
+      const body = JSON.parse(await readBody(req));
+      const file = String(body.file || '');
+      if (!/^rev\d+-[\w-]+\.json$/.test(file)) throw new Error('arquivo de histórico inválido');
+      const f = path.join(HIST_DIR, file);
+      if (!fs.existsSync(f)) throw new Error('snapshot não encontrado');
+      const loaded = JSON.parse(fs.readFileSync(f, 'utf8'));
+      if (!Array.isArray(loaded.items)) throw new Error('snapshot corrompido');
+      const cur = readBoard();
+      if (cur) snapshotHistory(cur, 'pre-revert');
+      delete loaded.rev;
+      writeBoard(loaded);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, rev: loaded.rev }));
       return;
     }
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });

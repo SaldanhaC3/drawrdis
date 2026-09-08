@@ -2,10 +2,9 @@
 /* Runs the in-app e2e harness (/?test=1) against a throwaway server using
    headless Chromium. Exits 1 if any test fails.
 
-   Chromium lookup order: $CHROME_PATH, google-chrome, google-chrome-stable,
-   chromium-browser, chromium, msedge. GitHub-hosted runners ship
-   google-chrome preinstalled. On Windows, set CHROME_PATH to chrome.exe/msedge.exe
-   or any Chromium-based browser executable. */
+   Chromium lookup order: $CHROME_PATH, common Windows/macOS install paths,
+   then google-chrome/chromium/msedge on PATH. GitHub-hosted runners ship
+   google-chrome preinstalled. */
 const { spawn, execSync } = require('child_process');
 const http = require('http');
 const path = require('path');
@@ -40,6 +39,11 @@ async function waitServer() {
 function findChrome() {
   const candidates = [
     process.env.CHROME_PATH,
+    'C:/Program Files/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     'google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium', 'msedge',
   ].filter(Boolean);
   for (const c of candidates) {

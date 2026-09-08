@@ -1,13 +1,15 @@
 // Servidor MCP (stdio) do quadro Drawrdis — zero dependências.
 //
 // Ferramentas:
-//   drawrdis_get_scene        → quadro em JSON ou resumo legível (inclui rev)
-//   drawrdis_add_items        → acrescenta itens (retorna ids)
-//   drawrdis_update_items     → mescla mudanças parciais por id
+//   drawrdis_get_scene        → quadro em JSON, resumo legível, ou só o diff desde uma rev
+//   drawrdis_add_items        → acrescenta itens (marca by:"agent"; retorna ids)
+//   drawrdis_update_items     → patch de campos por id (não sobrescreve o item inteiro)
 //   drawrdis_delete_items     → remove itens por id
 //   drawrdis_replace_scene    → substitui o quadro inteiro (exige a rev lida antes)
-//   drawrdis_wait_for_change  → espera a rev mudar (push para o agente, sem polling)
-//   drawrdis_render           → PNG do quadro renderizado (Chrome/Edge headless)
+//   drawrdis_wait_for_change  → espera a rev mudar; devolve os ids que mudaram
+//   drawrdis_layout           → align/distribute/place-right/grid sem conta de pixel
+//   drawrdis_user_state       → seleção e viewport atuais do humano
+//   drawrdis_render           → PNG do quadro (inteiro, por ids ou por bbox)
 //
 // Com o server.js no ar, toda leitura/escrita passa pelo HTTP dele (127.0.0.1):
 // os updates se serializam com os do editor (nada se perde em escrita
@@ -94,13 +96,16 @@ function api(method, pathname, body, timeoutMs = 10000) {
   });
 }
 
-async function getBoard() {
-  try { return await api('GET', '/scene'); }
+async function getBoard(since) {
+  try {
+    return await api('GET', since === undefined || since === null ? '/scene' : '/scene?since=' + Number(since));
+  }
   catch (e) { if (!e.offline) throw e; return readFileBoard(); }
 }
 
-// Aplica ops {add,update,remove} por item. HTTP: o servidor faz o merge sobre
-// o estado atual. Arquivo: mesmo merge aqui, com escrita atômica.
+// Aplica ops {add,update,remove,merge} por item. HTTP: o servidor faz o merge
+// sobre o estado atual (merge:true = update é patch de campos, null apaga).
+// Arquivo: mesmo merge aqui, com escrita atômica.
 async function syncOps(ops) {
   try {
     return await api('POST', '/sync', ops);
@@ -109,7 +114,19 @@ async function syncOps(ops) {
     const scene = readFileBoard();
     const byId = new Map(scene.items.map(i => [i.id, i]));
     for (const id of ops.remove || []) byId.delete(String(id));
-    for (const it of ops.update || []) byId.set(String(it.id), it);
+    for (const it of ops.update || []) {
+      const id = String(it.id);
+      if (ops.merge) {
+        const ex = byId.get(id);
+        if (!ex) throw new Error(`update: id ${id} não existe`);
+        const merged = Object.assign({}, ex);
+        for (const [k, v] of Object.entries(it)) {
+          if (k === 'id') continue;
+          if (v === null) delete merged[k]; else merged[k] = v;
+        }
+        byId.set(id, merged);
+      } else byId.set(id, it);
+    }
     for (const it of ops.add || []) byId.set(String(it.id), it);
     scene.items = [...byId.values()];
     return writeFileBoard(scene);
@@ -152,13 +169,18 @@ async function renderPng(args) {
   const chrome = findChrome();
   const w = Math.min(Math.max(Number(args?.w) || 1600, 320), 4096);
   const h = Math.min(Math.max(Number(args?.h) || 900, 240), 4096);
+  // recorte: ids (tela/seleção) ou bbox [x0,y0,x1,y1] do mundo. Sem isso, um
+  // quadro grande vira um PNG ilegível e o agente não consegue verificar nada.
+  let snap = `http://127.0.0.1:${port}/?snap`;
+  if (Array.isArray(args?.ids) && args.ids.length) snap += '&ids=' + args.ids.map(encodeURIComponent).join(',');
+  else if (Array.isArray(args?.bbox) && args.bbox.length === 4 && args.bbox.every(Number.isFinite)) snap += '&bbox=' + args.bbox.join(',');
   const png = path.join(os.tmpdir(), 'drawrdis-render-' + uid() + '.png');
   try {
     const r = spawnSync(chrome, [
       '--headless=new', '--disable-gpu', '--no-sandbox', '--hide-scrollbars',
       `--window-size=${w},${h}`, `--screenshot=${png}`,
       '--virtual-time-budget=6000',
-      `http://127.0.0.1:${port}/?snap`,
+      snap,
     ], { timeout: 90000, windowsHide: true });
     let data;
     try { data = fs.readFileSync(png); } catch {
@@ -176,17 +198,18 @@ async function renderPng(args) {
 const TOOLS = [
   {
     name: 'drawrdis_get_scene',
-    description: 'Lê o quadro Drawrdis compartilhado (rascunhos de telas de app entre usuário e agente). Use format=summary para uma visão rápida e format=json para a cena completa. O resumo inclui rev (número da versão do quadro), necessário para replace_scene e wait_for_change.',
+    description: 'Lê o quadro Drawrdis compartilhado (rascunhos de telas de app entre usuário e agente). Use format=summary para uma visão rápida e format=json para a cena completa. O resumo inclui rev (número da versão do quadro), necessário para replace_scene e wait_for_change. Com since=N, devolve só {changed, removed} desde a rev N (barato para acompanhar edições); se vier truncated, leia a cena completa.',
     inputSchema: {
       type: 'object',
       properties: {
         format: { type: 'string', enum: ['summary', 'json'], description: 'summary = visão compacta; json = cena completa', default: 'summary' },
+        since: { type: 'number', description: 'rev já vista; retorna apenas o que mudou desde então' },
       },
     },
   },
   {
     name: 'drawrdis_add_items',
-    description: 'Acrescenta itens ao quadro. Tipos: rect (x,y,w,h,r,fill,fillStyle,stroke,strokeWidth,strokeStyle,roughness,opacity,angle), ellipse/diamond (idem rect), text (x,y,text,fontSize,bold,fontFamily,textAlign), line/arrow (x,y,x2,y2,mids,startBind,endBind), draw (points), image (src).',
+    description: 'Acrescenta itens ao quadro (marca by:"agent" para o humano ver o que você desenhou). Tipos: rect (x,y,w,h,r,fill,fillStyle,stroke,strokeWidth,strokeStyle,roughness,opacity,angle), ellipse/diamond (idem rect), text (x,y,text,fontSize,bold,fontFamily,textAlign), line/arrow (x,y,x2,y2,mids,startBind,endBind), draw (points), image (src). Para posicionar sem sobreposição, use drawrdis_layout op=place-right depois de adicionar.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -197,7 +220,7 @@ const TOOLS = [
   },
   {
     name: 'drawrdis_update_items',
-    description: 'Atualiza itens existentes por id (merge de campos). Só toca nos ids listados; o resto do quadro, inclusive o que o usuário desenhou entretanto, não é afetado.',
+    description: 'Aplica patches de campos por id (merge: só os campos enviados mudam; null apaga um campo). Se o humano moveu o item entre sua leitura e o patch, as coordenadas dele sobrevivem. Só toca nos ids listados. Itens atualizados ficam marcados by:"agent".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -232,7 +255,7 @@ const TOOLS = [
   },
   {
     name: 'drawrdis_wait_for_change',
-    description: 'Bloqueia até alguém (o usuário) mudar o quadro, ou até o timeout. Passe a rev que você viu em get_scene; retorna {changed, rev} quando o quadro passar daquela versão. Use para acompanhar edição humana sem ficar relendo o quadro a cada passo.',
+    description: 'Bloqueia até alguém (o usuário) mudar o quadro, ou até o timeout. Passe a rev que você viu em get_scene; retorna {changed, rev, ids} quando o quadro passar daquela versão — ids são os itens que mudaram, use get_scene since=para ler só eles. Use para acompanhar edição humana sem ficar relendo o quadro a cada passo.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -243,13 +266,33 @@ const TOOLS = [
     },
   },
   {
+    name: 'drawrdis_layout',
+    description: 'Alinha, distribui e posiciona itens sem você calcular coordenadas. op: align-left|align-right|align-top|align-bottom|align-hcenter|align-vcenter (na caixa da seleção), distribute-h|distribute-v (espaços iguais), place-right (move a seleção para a direita de todo o resto do quadro, preservando o layout relativo — use para novo conteúdo sem sobreposição), grid (arranja os ids em grade). gap em px (padrão 40).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'ids dos itens afetados' },
+        op: { type: 'string', description: 'align-left|align-right|align-top|align-bottom|align-hcenter|align-vcenter|distribute-h|distribute-v|place-right|grid' },
+        gap: { type: 'number', description: 'espaçamento em px (place-right/grid)' },
+      },
+      required: ['ids', 'op'],
+    },
+  },
+  {
+    name: 'drawrdis_user_state',
+    description: 'O que o humano está fazendo no quadro agora: {sel: ids selecionados, view: {x,y,w,h,z} do viewport em coordenadas do mundo, at: timestamp}. Use antes de um "arruma isso aqui" para saber o que ele está marcando, e passe view como bbox de drawrdis_render para ver exatamente o recorte dele.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'drawrdis_render',
-    description: 'Renderiza o quadro como PNG e devolve a imagem na resposta. É o seu par de olhos: use depois de desenhar para conferir sobreposição, alinhamento e legibilidade de verdade. Precisa do server.js no ar e de um Chrome/Edge instalado.',
+    description: 'Renderiza o quadro como PNG e devolve a imagem na resposta. É o seu par de olhos: use depois de desenhar para conferir sobreposição, alinhamento e legibilidade de verdade. Por padrão enquadra o quadro inteiro (ilegível em quadros grandes): passe ids (ex.: a moldura de uma tela) ou bbox [x0,y0,x1,y1] para renderizar um recorte em alta resolução. Precisa do server.js no ar e de um Chrome/Edge instalado.',
     inputSchema: {
       type: 'object',
       properties: {
         w: { type: 'number', description: 'largura do PNG (padrão 1600)' },
         h: { type: 'number', description: 'altura do PNG (padrão 900)' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'recorte: ids a enquadrar (com o grupo deles)' },
+        bbox: { type: 'array', items: { type: 'number' }, description: 'recorte: [x0,y0,x1,y1] do mundo a enquadrar' },
       },
     },
   },
@@ -257,26 +300,28 @@ const TOOLS = [
 
 async function callTool(name, args) {
   if (name === 'drawrdis_get_scene') {
-    const scene = await getBoard();
+    const scene = await getBoard(args?.since);
+    if (args?.since !== undefined && args?.since !== null && Array.isArray(scene.changed)) {
+      return JSON.stringify(scene); // {rev, since, changed:[itens], removed:[ids], truncated}
+    }
     return (args?.format === 'json') ? JSON.stringify(scene, null, 2) : summarize(scene);
   }
   if (name === 'drawrdis_add_items') {
     const add = Array.isArray(args?.items) ? args.items : [];
     if (!add.length) throw new Error('items vazio');
     validateItems(add);
-    for (const it of add) it.id = it.id || uid();
+    for (const it of add) { it.id = it.id || uid(); it.by = 'agent'; }
     await syncOps({ add });
     return 'adicionados: ' + add.map(i => i.id).join(', ');
   }
   if (name === 'drawrdis_update_items') {
     const patches = Array.isArray(args?.items) ? args.items : [];
     if (!patches.length) throw new Error('items vazio');
-    const scene = await getBoard();
-    const byId = new Map(scene.items.map(i => [i.id, i]));
-    const missing = patches.filter(p => !byId.has(p.id)).map(p => p.id);
-    if (missing.length) throw new Error('ids inexistentes: ' + missing.join(', '));
-    const update = patches.map(p => Object.assign({}, byId.get(p.id), p, { id: p.id }));
-    await syncOps({ update });
+    for (const p of patches) if (!p.id) throw new Error('patch sem id');
+    // merge:true = o servidor aplica só os campos do patch sobre o item atual.
+    // O que o humano mexeu no meio do caminho não é revertido pelo seu patch.
+    const update = patches.map(p => Object.assign({}, p, { by: 'agent' }));
+    await syncOps({ update, merge: true });
     return 'atualizados: ' + patches.map(p => p.id).join(', ');
   }
   if (name === 'drawrdis_delete_items') {
@@ -315,6 +360,22 @@ async function callTool(name, args) {
         if (rev > minRev) return JSON.stringify({ changed: true, rev });
       }
       return JSON.stringify({ changed: false, rev: minRev });
+    }
+  }
+  if (name === 'drawrdis_layout') {
+    try {
+      const r = await api('POST', '/layout', { ids: args?.ids, op: args?.op, gap: args?.gap });
+      return JSON.stringify(r);
+    } catch (e) {
+      if (!e.offline) throw e;
+      throw new Error('drawrdis_layout precisa do server.js no ar (a geometria mora nele)');
+    }
+  }
+  if (name === 'drawrdis_user_state') {
+    try { return JSON.stringify(await api('GET', '/state')); }
+    catch (e) {
+      if (!e.offline) throw e;
+      return JSON.stringify({ sel: [], view: null, offline: true });
     }
   }
   if (name === 'drawrdis_render') return renderPng(args);
