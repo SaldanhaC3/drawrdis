@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax check (no build, just parse)
+        run: |
+          node --check server.js
+          node --check mcp-server.js
+          node --check scripts/run-tests.js
+          node --check scripts/geom-test.js
+      - name: Geometry + undo unit checks (pure Node, no browser)
+        run: node scripts/geom-test.js
+      - name: Run e2e harness (headless Chromium)
+        run: node scripts/run-tests.js
