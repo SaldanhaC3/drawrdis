@@ -25,10 +25,13 @@ Agentes de código são ótimos com código e cegos em design. O Drawrdis dá ol
 - **Presença do agente**: cada item registra quem o editou por último (`by`), itens que o agente escreve piscam na sua tela e um aviso diz "o agente editou N itens" no momento em que acontece
 - **Links de navegação + modo apresentação**: selecione um elemento, Ctrl+L, clique no destino; Alt+P apresenta o protótipo com clique que salta de tela (o agente liga os mesmos fluxos com um único `update_items`)
 - Busca (Ctrl+F), trava de objeto (Ctrl+Shift+L), histórico automático com restaurar em um clique
+- **Guias de alinhamento**: arrastar um item encaixa bordas e centros nos vizinhos e mostra linhas-guia vermelhas
+- **Menu de contexto** (botão direito) em qualquer seleção: copiar, duplicar, apagar, reordenar, agrupar, travar, criar link, editar texto
+- Duplo clique numa forma solta um rótulo centralizado sobre ela; a barra de status mostra as coordenadas do cursor ao vivo
 - Colaboração com seu agente: push via SSE (diffs incrementais), quadro em arquivo, ferramentas MCP
 - **Escrita concorrente segura**: agente e humano editando ao mesmo tempo não se apagam (merge por item, patch de campos, número de versão do quadro e um undo cirúrgico que nunca desfaz o trabalho do agente)
 - Projetos nomeados (salvar/abrir vários quadros), arquivos portáteis `.drawrdis`
-- Tema escuro, grade magnética, modo zen, interface PT/EN (toggle no menu)
+- Tema escuro, grade magnética, modo zen, interface completa PT/EN (toggle no menu, incluindo dicas dinâmicas)
 - Exportar PNG, SVG e Excalidraw; arraste-e-solte importa quadros de outros apps
 - Imagens guardadas como arquivos em `files/`, para o `board.json` continuar leve
 - Harness e2e de 70 testes rodando headless no CI

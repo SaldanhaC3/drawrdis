@@ -27,6 +27,9 @@ AI coding agents are great at code and blind at design. Drawrdis gives them eyes
 - **Agent presence**: every item records who last edited it (`by`), items the agent writes flash on your screen, and a chip says "the agent edited N items" the moment it happens
 - **Navigation links + present mode**: select an element, Ctrl+L, click a destination; Alt+P presents the prototype with click-to-jump (the agent wires the same links with one `update_items`)
 - Search (Ctrl+F), object lock (Ctrl+Shift+L), automatic history with one-click restore
+- **Smart alignment guides**: dragging an item snaps its edges/centers to neighbors and shows red guide lines
+- **Right-click context menu** on any selection: copy, duplicate, delete, reorder, group, lock, create link, edit text
+- Double-click a shape to drop a centered label on it; the status bar shows live cursor coordinates
 - Live collaboration with your agent: SSE push (incremental diffs), file-based board, MCP tools
 - **Concurrent-safe writes**: agent and human editing at the same time don't erase each other (per-item merge, field-level patches, a board revision number, and surgical undo that never reverts the agent's work)
 - Named projects (save/open multiple boards), portable `.drawrdis` files
@@ -158,7 +161,7 @@ Chromium (needs Chrome/Chromium/Edge installed, or `CHROME_PATH` set).
 ## Limitations (on purpose, for now)
 
 - Local-only, single user, binds to `127.0.0.1`
-- UI chrome is PT/EN (menu toggle); canvas hints are still Portuguese
+- Full PT/EN interface (menu, panels, dialogs, hints); the help table and status bar switch with the language
 - No real-time multi-human cursors (agent presence is in; human-to-human cursors are not)
 
 ## License

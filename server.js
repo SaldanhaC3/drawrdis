@@ -245,7 +245,10 @@ function writeBoard(scene) {
   writtenIndex = idx;
   // tmp + rename: escrita atômica, nenhum leitor vê JSON pela metade
   const tmp = BOARD + '.' + process.pid + '.' + crypto.randomBytes(3).toString('hex') + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(scene, null, 2));
+  // sem indentação: em um board de centenas de itens, cada escrita re-formatava
+  // ~1 MB de espaços que ninguém lê (o editor lê via API, o humano nunca abre
+  // o arquivo cru). O diff fica mais barato e o board é mais bonito no git.
+  fs.writeFileSync(tmp, JSON.stringify(scene));
   fs.renameSync(tmp, BOARD);
   if (scene.rev % 20 === 0) snapshotHistory(scene);
   flushWaiters(scene.rev, touched);
@@ -364,7 +367,9 @@ const server = http.createServer(async (req, res) => {
       const cur = readBoard();
       if (cur && (cur.rev || 0) > minRev) {
         const cs = changedSince(minRev);
-        const ids = cs.truncated ? undefined : [...cs.changed.map(i => i.id), ...cs.removed];
+        // ids pode ser enorme quando muda meio board; cap é o `since` voltando
+        // a por o trabalho pesado no get_scene, não em toda resposta de wait
+        const ids = cs.truncated ? undefined : [...cs.changed.map(i => i.id), ...cs.removed].slice(0, 200);
         sendJson({ changed: true, rev: cur.rev, ids });
         return;
       }
@@ -433,6 +438,10 @@ const server = http.createServer(async (req, res) => {
         byId.set(String(it.id), it);
       }
       scene.items = [...byId.values()];
+      // ordem: se o cliente mandou order explícito, aplica; senão, deriva da
+      // lista (add/update entram no fim, em ordem estável) — empurrar um item
+      // novo no fim é o caso comum, e assim o save não re-serializa a ordem
+      // de 900 itens a cada toque.
       if (Array.isArray(body.order)) {
         const pos = new Map(body.order.map((id, i) => [String(id), i]));
         scene.items.sort((a, b) => (pos.has(a.id) ? pos.get(a.id) : 1e9) - (pos.has(b.id) ? pos.get(b.id) : 1e9));

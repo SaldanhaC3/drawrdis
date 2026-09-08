@@ -238,6 +238,17 @@
   #presentbar button { padding: 5px 12px; border-radius: 8px; background: var(--accent2); color: var(--accent); font-weight: 600; }
   body.present .chrome { display: none !important; }
   body.present #presentbar { display: flex; }
+
+  #cmenu {
+    position: fixed; z-index: 35; min-width: 200px;
+    background: var(--bar); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--isl-shadow); padding: 6px;
+    display: none; flex-direction: column; gap: 1px;
+  }
+  #cmenu.open { display: flex; }
+  #cmenu button { justify-content: flex-start; padding: 7px 10px; font-size: 13px; gap: 9px; }
+  #cmenu hr { border: none; border-top: 1px solid var(--line); margin: 4px 0; }
+  #mousepos { font-size: 11px; color: var(--ink2); min-width: 74px; text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -247,7 +258,9 @@
 <div id="hint" class="chrome"></div>
 <div id="panel"></div>
 <div class="isl chrome" id="bl"></div>
+<span id="mousepos" class="chrome"></span>
 <button class="isl chrome" id="helpBtn" title="Ajuda (?)"></button>
+<div id="cmenu"></div>
 <div class="isl chrome" id="br"><span><span id="live"></span><span id="livetxt">conectando…</span></span><span id="save">—</span></div>
 <div id="menu"></div>
 <div id="cpick"></div>
@@ -302,14 +315,57 @@ const EN = {
   help: 'Help (?)', menu: 'Menu',
   bgDots: 'Dots', bgGrid: 'Grid', bgLines: 'Lines', bgPlain: 'Plain', bgColor: 'Background color',
   agentEdited: n => n === 1 ? 'the agent edited 1 item' : `the agent edited ${n} items`,
+  ctxCopy: 'Copy', ctxDup: 'Duplicate', ctxDelete: 'Delete', ctxFront: 'Bring to front',
+  ctxBack: 'Send to back', ctxGroup: 'Group', ctxUngroup: 'Ungroup', ctxLock: 'Lock',
+  ctxUnlock: 'Unlock', ctxLink: 'Create link…', ctxLinkHint: 'click the link destination (Esc cancels)',
+  ctxEdit: 'Edit text',
+  hintGroupNeed2: 'select 2+ items to group', hintGrouped: '%1 items grouped (Ctrl+Shift+G to ungroup)',
+  hintUngrouped: 'group cleared', hintImgFail: "couldn't read those images",
+  hintImgsInserted: '%1 images inserted (webp)', hintImgInserted: '%1 image inserted (webp)',
+  hintLinkCreated: 'link created — in present mode (Alt+P) clicking here jumps to the destination',
+  hintLinkDest: 'click a destination item (Esc cancels)', hintCopied: 'copied',
+  hintLinkNav: 'click the navigation link destination (Esc cancels)', hintFont: 'font %1px',
+  hintPastedForeign: 'pasted from another board: %1 items',
+  hintLocked: '%1 items locked (Ctrl+Shift+L to unlock)', hintUnlocked: '%1 items unlocked',
+  hintNothingLocked: 'nothing locked on the board', hintSvg: 'SVG exported',
+  hintExcali: 'exported as Excalidraw — opens directly on excalidraw.com',
+  hintRestoreFail: "couldn't restore", hintRestored: 'restored snapshot rev %1',
+  hintBackupFail: "couldn't save backup; board NOT cleared",
+  hintNewBoard: 'New board created — backup in "Saved boards", Ctrl+Z goes back',
+  hintBoardSaved: 'board "%1" saved', hintBoardOpened: 'board "%1" opened — Ctrl+Z goes back',
+  hintFileSaved: 'board saved as %1.drawrdis — double-click it to reopen here',
+  hintFileLoaded: 'file loaded: %1', hintFileFail: "couldn't read this file: %1",
+  hintFlowNeedSel: 'select an element and use Ctrl+arrows', hintFlowDir: 'flow created %1',
+  hintFlowNeedSel2: 'select an element to create the flow',
+  hintFlowCreated: 'flow created — the new screen is linked by an arrow',
+  hintToolLocked: 'tool locked', hintToolUnlocked: 'tool unlocked',
+  hintSnapOn: 'magnetic grid on (every 20px)', hintSnapOff: 'magnetic grid off',
+  hintEdit: 'Double-click or <kbd>Enter</kbd> to edit text',
+  hintDraw: 'Drag to draw · <kbd>Shift</kbd> locks proportion · <kbd>Shift</kbd> while resizing keeps ratio · <kbd>Ctrl</kbd> expands from center',
+  hintHand: 'Drag to move the board',
+  hintKeys: '<kbd>1-9,0</kbd> tools · <kbd>Q</kbd> lock · <kbd>Enter</kbd> text · <kbd>Ctrl+Enter</kbd> flow · <kbd>Ctrl+O</kbd> open · <kbd>?</kbd> shortcuts',
+  confirmNewBoard: 'Create a new board? The current board will be saved as a backup.',
+  confirmClear: 'Clear the whole board?',
+  cpStroke: 'Stroke color', cpFill: 'Fill color', cpHues: 'Hues', cpNone: 'No color',
+  cpCurrent: 'Current color', cpCustom: 'Custom color',
+  searchFound: '%1 found', searchNone: 'none',
+  dirUp: 'above', dirDown: 'below', dirLeft: 'to the left', dirRight: 'to the right',
 };
 function t(key, pt) { return lang === 'en' && EN[key] !== undefined ? EN[key] : pt; }
+// hint(key, pt, ...args): setHint bilíngue com placeholders %1 %2...
+function hint(key, pt, ...args) {
+  let s = t(key, pt);
+  args.forEach((a, i) => { s = s.split('%' + (i + 1)).join(a); });
+  setHint(s);
+}
 
 const cv = document.getElementById('cv');
 const ctx = cv.getContext('2d');
 const ed = document.getElementById('ed');
 const liveEl = document.getElementById('live');
 const livetxt = document.getElementById('livetxt');
+const mouseposEl = document.getElementById('mousepos');
+const cmenuEl = document.getElementById('cmenu');
 const saveEl = document.getElementById('save');
 const hintEl = document.getElementById('hint');
 const panelEl = document.getElementById('panel');
@@ -674,6 +730,38 @@ function marqueeBox() {
     w: Math.abs(marquee.x1 - marquee.x0),
     h: Math.abs(marquee.y1 - marquee.y0),
   };
+}
+
+/* ---------- smart guides (alinhamento no move) ---------- */
+// Caixa da seleção a partir do snapshot do início do gesto (subsetSnap),
+// transladada por (dx,dy). Compara bordas e centros com os outros itens e
+// devolve o ajuste de snap + as linhas-guia para desenhar.
+function selBoxFrom(snapMap, dx, dy) {
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const it of Object.values(snapMap)) {
+    const b = rotAABB(it);
+    x0 = Math.min(x0, b.bx); y0 = Math.min(y0, b.by);
+    x1 = Math.max(x1, b.bx + b.w); y1 = Math.max(y1, b.by + b.h);
+  }
+  if (x1 < x0) return null;
+  return { bx: x0 + dx, by: y0 + dy, w: x1 - x0, h: y1 - y0 };
+}
+function alignGuide(beforeMap, dx, dy) {
+  const sel = selBoxFrom(beforeMap, dx, dy);
+  if (!sel) return null;
+  const TOL = 6 / z; // tolerância em px de tela, não do mundo
+  let bx = { d: TOL, ad: 0, at: null }, by = { d: TOL, ad: 0, at: null };
+  for (const it of scene.items) {
+    if (beforeMap[it.id]) continue; // ignora a própria seleção
+    const b = rotAABB(it);
+    const xs = [[sel.bx, b.bx], [sel.bx + sel.w, b.bx + b.w], [sel.bx + sel.w / 2, b.bx + b.w / 2]];
+    for (const [a, tg] of xs) { const d = Math.abs(a - tg); if (d < bx.d) bx = { d, ad: tg - a, at: tg }; }
+    const ys = [[sel.by, b.by], [sel.by + sel.h, b.by + b.h], [sel.by + sel.h / 2, b.by + b.h / 2]];
+    for (const [a, tg] of ys) { const d = Math.abs(a - tg); if (d < by.d) by = { d, ad: tg - a, at: tg }; }
+  }
+  const adx = bx.at !== null ? bx.ad : 0, ady = by.at !== null ? by.ad : 0;
+  if (!adx && !ady) return null;
+  return { adx, ady, guide: { x: bx.at, y: by.at } };
 }
 
 /* ---------- traço à mão (roughness) ---------- */
@@ -1161,6 +1249,17 @@ function draw() {
         ctx.fillStyle = '#fff'; ctx.fill(); ctx.stroke();
       }
     }
+  if (mode === 'move' && gesture.guide) {
+    // linhas-guia de alinhamento: vermelhas, finas, atravessam a tela
+    ctx.strokeStyle = 'rgba(224,49,49,.9)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    if (gesture.guide.x !== null) { ctx.moveTo(w2sX(gesture.guide.x), 0); ctx.lineTo(w2sX(gesture.guide.x), H); }
+    if (gesture.guide.y !== null) { ctx.moveTo(0, w2sY(gesture.guide.y)); ctx.lineTo(W, w2sY(gesture.guide.y)); }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
   if (marquee) {
     const x = w2sX(Math.min(marquee.x0, marquee.x1)), y = w2sY(Math.min(marquee.y0, marquee.y1));
     const w = Math.abs(marquee.x1 - marquee.x0) * z, h = Math.abs(marquee.y1 - marquee.y0) * z;
@@ -1298,13 +1397,13 @@ function expandGroup(ids) {
   return [...out];
 }
 function groupSel() {
-  if (selIds.length < 2) { setHint('selecione 2+ itens para agrupar'); return; }
+  if (selIds.length < 2) { hint('hintGroupNeed2', 'selecione 2+ itens para agrupar'); return; }
   const before = subsetSnap(selIds);
   const gid = 'g' + uid();
   for (const id of selIds) { const it = scene.items.find(i => i.id === id); if (it) it.g = gid; }
   pushPatch(before, subsetSnap(selIds), selIds);
   save(); draw();
-  setHint(selIds.length + ' itens agrupados (Ctrl+Shift+G desfaz)');
+  hint('hintGrouped', '%1 itens agrupados (Ctrl+Shift+G desfaz)', selIds.length);
 }
 function ungroupSel() {
   if (!selIds.length) return;
@@ -1312,7 +1411,7 @@ function ungroupSel() {
   for (const id of selIds) { const it = scene.items.find(i => i.id === id); if (it) delete it.g; }
   pushPatch(before, subsetSnap(selIds), selIds);
   save(); draw();
-  setHint('grupo desfeito');
+  hint('hintUngrouped', 'grupo desfeito');
 }
 // Apagar em patch: só os ids removidos + setas que perdiam bind entram no undo,
 // com a ordem de camadas salva para reinserir no lugar. Um Ctrl+Z depois de um
@@ -1340,9 +1439,11 @@ function deleteIds(ids) {
 // Itens que o agente escreveu no meio do caminho sobrevivem ao nosso save.
 let saveTimer = null;
 let baseStr = new Map(); // id -> JSON do item como estava no último sync
+let baseOrd = ''; // ordem (ids join) como estava no último sync
 let lastRev = 0;
 function rebase(s) {
   baseStr = new Map(s.items.map(i => [i.id, JSON.stringify(i)]));
+  baseOrd = s.items.map(i => i.id).join('|');
   lastRev = s.rev || 0;
 }
 // Reconcilia o editor com o servidor depois de um gap (restart do servidor,
@@ -1391,17 +1492,22 @@ async function doSave() {
     }
     const remove = [];
     for (const id of baseStr.keys()) if (!seen.has(id)) remove.push(id);
-    if (add.length || update.length || remove.length) {
+    const ord = scene.items.map(i => i.id);
+    const ordStr = ord.join('|');
+    if (add.length || update.length || remove.length || ordStr !== baseOrd) {
       const res = await fetch('/sync', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ rev: lastRev, add, update, remove, order: scene.items.map(i => i.id), merge: true }),
+        // order só quando a ordem de camadas mudou: num board cheio, mandar
+        // a lista de ids a cada toque era o payload dominante do save
+        body: JSON.stringify({ rev: lastRev, add, update, remove, merge: true, ...(ordStr !== baseOrd ? { order: ord } : {}) }),
       });
       if (res.status === 409) { await resync(); return; } // servidor reiniciou ou cena trocou: alinha com o servidor
       if (!res.ok) throw new Error((await res.text()).slice(0, 120));
       const r = await res.json();
       for (const [id, j] of sent) baseStr.set(id, j);
       for (const id of remove) baseStr.delete(id);
+      baseOrd = ordStr;
       lastRev = r.rev || lastRev;
     }
     dirty = false;
@@ -1472,6 +1578,7 @@ function applyOpsEvent(p) {
   selIds = selIds.filter(id => scene.items.some(i => i.id === id));
   for (const it of [...(o.add || []), ...(o.update || [])]) baseStr.set(it.id, JSON.stringify(it));
   for (const id of rm) baseStr.delete(id);
+  baseOrd = scene.items.map(i => i.id).join('|');
   lastRev = p.rev || lastRev;
   const agentIds = [...(o.add || []), ...(o.update || [])].filter(i => i && i.by === 'agent').map(i => i.id);
   if (agentIds.length) { flashItems(agentIds); showAgentChip(agentIds.length); }
@@ -1632,7 +1739,7 @@ async function addImageFiles(files, at) {
   for (const f of imgs) {
     try { decoded.push(await loadImageFile(f)); } catch { /* pula a que falhar */ }
   }
-  if (!decoded.length) { setHint('não consegui ler essas imagens'); return; }
+  if (!decoded.length) { hint('hintImgFail', 'não consegui ler essas imagens'); return; }
   for (const d of decoded) d.src = await externalizeImage(d.src);
   const cell = 480, gap = 24;
   const cols = Math.ceil(Math.sqrt(decoded.length));
@@ -1653,7 +1760,7 @@ async function addImageFiles(files, at) {
   selIds = newIds;
   setTool('select');
   save(); draw(); refreshPanel();
-  setHint(newIds.length + (newIds.length > 1 ? ' imagens inseridas (webp)' : ' imagem inserida (webp)'));
+  hint(newIds.length > 1 ? 'hintImgsInserted' : 'hintImgInserted', newIds.length > 1 ? '%1 imagens inseridas (webp)' : '%1 imagem inserida (webp)', newIds.length);
 }
 imgIn.addEventListener('change', () => {
   if (imgIn.files.length) addImageFiles(imgIn.files);
@@ -1735,9 +1842,9 @@ cv.addEventListener('pointerdown', e => {
         src.link = { to: dst.id };
         pushPatch(before, subsetSnap([src.id]), [src.id]);
         save();
-        setHint('link criado — no modo apresentação (Alt+P) clicar aqui salta pro destino');
+        hint('hintLinkCreated', 'link criado — no modo apresentação (Alt+P) clicar aqui salta pro destino');
       } else if (!dst) {
-        setHint('clique num item de destino (Esc cancela)');
+        hint('hintLinkDest', 'clique num item de destino (Esc cancela)');
       }
       if (dst) linkFrom = null;
       draw();
@@ -1884,6 +1991,7 @@ function eraseAt(wx, wy) {
 cv.addEventListener('pointermove', e => {
   const [sx, sy] = canvasPos(e);
   const wx = s2wX(sx), wy = s2wY(sy);
+  if (mouseposEl) mouseposEl.textContent = Math.round(wx) + ', ' + Math.round(wy);
 
   if (present) {
     if (mode === null) {
@@ -1946,6 +2054,9 @@ cv.addEventListener('pointermove', e => {
   if (mode === 'move') {
     let dx = wx - gesture.startWx, dy = wy - gesture.startWy;
     if (snapOn) { dx = S(dx); dy = S(dy); }
+    const g = alignGuide(gesture.before, dx, dy);
+    if (g) { dx += g.adx; dy += g.ady; }
+    gesture.guide = g ? g.guide : null;
     for (const id of selIds) {
       const it = scene.items.find(i => i.id === id);
       const st = gesture.starts[id];
@@ -2258,6 +2369,17 @@ cv.addEventListener('dblclick', e => {
   if (it && it.type === 'text') {
     gesture = { newText: false, before: subsetSnap([it.id]) };
     openEditor(it, false);
+  } else if (it && ['rect', 'ellipse', 'diamond'].includes(it.type)) {
+    // duplo clique numa forma cria um rótulo centralizado sobre ela
+    const b = rotAABB(it);
+    const t = mkText('', b.bx + b.w / 2, b.by + b.h / 2 - cur.fontSize * 0.6, cur.fontSize);
+    t.id = uid();
+    t.opacity = cur.opacity;
+    t.textAlign = 'center';
+    const ord0 = orderIds();
+    scene.items.push(t);
+    gesture = { newText: true, ord0 };
+    openEditor(t, true);
   } else if (!it) {
     const t = mkText('', wx, wy - 10, cur.fontSize);
     t.id = uid();
@@ -2269,7 +2391,58 @@ cv.addEventListener('dblclick', e => {
   }
 });
 
-cv.addEventListener('contextmenu', e => e.preventDefault());
+function closeCtxMenu() { cmenuEl.classList.remove('open'); }
+function ctxItem(ic, label, fn) {
+  const b = el('button', { onclick: () => { closeCtxMenu(); fn(); } }, cmenuEl);
+  b.innerHTML = icon(ic, 16) + `<span>${label}</span>`;
+  return b;
+}
+function openCtxMenu(sx, sy) {
+  cmenuEl.innerHTML = '';
+  const hasSel = selIds.length > 0;
+  if (!hasSel) { closeCtxMenu(); return; }
+  ctxItem('dup', t('ctxCopy', 'Copiar'), copySel);
+  ctxItem('dup', t('ctxDup', 'Duplicar'), duplicateSel);
+  ctxItem('trash', t('ctxDelete', 'Apagar'), () => deleteIds(selIds.slice()));
+  el('hr', {}, cmenuEl);
+  ctxItem('tofront', t('ctxFront', 'Trazer para frente'), () => orderSel('front'));
+  ctxItem('toback', t('ctxBack', 'Enviar para trás'), () => orderSel('back'));
+  el('hr', {}, cmenuEl);
+  const grouped = selIds.every(id => { const o = scene.items.find(i => i.id === id); return o && !!o.g; });
+  if (grouped) ctxItem('dup', t('ctxUngroup', 'Desagrupar'), ungroupSel);
+  else ctxItem('dup', t('ctxGroup', 'Agrupar'), groupSel);
+  const anyLocked = selIds.some(id => { const o = scene.items.find(i => i.id === id); return o && o.locked; });
+  ctxItem(anyLocked ? 'unlock' : 'lock', anyLocked ? t('ctxUnlock', 'Destravar') : t('ctxLock', 'Travar'), toggleLockSel);
+  if (selIds.length === 1) {
+    ctxItem('play', t('ctxLink', 'Criar link…'), () => {
+      linkFrom = selIds[0];
+      setHint(t('ctxLinkHint', 'clique no destino do link (Esc cancela)'));
+    });
+    const it = selFirst();
+    if (it && it.type === 'text') {
+      ctxItem('text', t('ctxEdit', 'Editar texto'), () => {
+        gesture = { newText: false, before: subsetSnap([it.id]) };
+        openEditor(it, false);
+      });
+    }
+  }
+  cmenuEl.classList.add('open');
+  cmenuEl.style.left = Math.min(sx + 4, W - 210) + 'px';
+  cmenuEl.style.top = Math.min(sy + 4, H - 280) + 'px';
+}
+cv.addEventListener('contextmenu', e => {
+  e.preventDefault();
+  if (present) return;
+  const [sx, sy] = canvasPos(e);
+  const wx = s2wX(sx), wy = s2wY(sy);
+  const it = hitItem(wx, wy);
+  if (it && !selIds.includes(it.id)) {
+    selIds = e.altKey ? [it.id] : expandGroup([it.id]);
+    refreshPanel();
+  }
+  draw();
+  openCtxMenu(sx, sy);
+});
 
 /* ---------- edição de texto ---------- */
 function openEditor(it, isNew) {
@@ -2296,8 +2469,8 @@ function commitEditor() {
   if (!it) return;
   const val = ed.value.replace(/\n+$/, '');
   if (gesture.newText && !val.trim()) {
+    // texto novo nunca confirmado: descarta sem entrada de undo (nada aconteceu)
     scene.items = scene.items.filter(i => i.id !== it.id);
-    if (gesture.ord0) { pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], gesture.ord0, orderIds()); save(); }
   } else if (val !== it.text) {
     it.text = val;
     ensureTextSize(it);
@@ -2319,7 +2492,7 @@ ed.addEventListener('blur', () => { if (editingId !== null) commitEditor(); });
 /* ---------- área de transferência, ordem, alinhar ---------- */
 function copySel() {
   clip = scene.items.filter(i => selIds.includes(i.id)).map(i => JSON.parse(JSON.stringify(i)));
-  setHint(clip.length ? 'copiado' : null);
+  setHint(clip.length ? t('hintCopied', 'copiado') : null);
 }
 function pasteClip() {
   if (!clip.length) return;
@@ -2440,7 +2613,7 @@ window.addEventListener('keydown', e => {
     e.preventDefault();
     if (tool === 'select' && selIds.length === 1 && !present) {
       linkFrom = selIds[0];
-      setHint('clique no destino do link de navegação (Esc cancela)');
+      hint('hintLinkNav', 'clique no destino do link de navegação (Esc cancela)');
     }
     return;
   }
@@ -2454,7 +2627,7 @@ window.addEventListener('keydown', e => {
     if (first) {
       const nf = Math.max(4, Math.round(((first.fontSize + (down ? -0.25 : 0.25)) * 100)) / 100);
       setStyle({ fontSize: nf });
-      setHint(`fonte ${nf}px`);
+      hint('hintFont', 'fonte %1px', nf);
     }
     return;
   }
@@ -2494,6 +2667,7 @@ window.addEventListener('keydown', e => {
   }
   if (e.key === '!' || (e.shiftKey && e.key === '1')) { zoomToFit(); return; }
   if (e.key === 'Escape') {
+    if (cmenuEl.classList.contains('open')) { closeCtxMenu(); return; }
     if (present) { togglePresent(); return; }
     if (linkFrom) { linkFrom = null; setHint(null); draw(); return; }
     if (searchbar.classList.contains('open')) { closeSearch(); return; }
@@ -2549,7 +2723,7 @@ function importForeignClipboard(ex) {
   selIds = ids;
   setTool('select');
   save(); draw(); refreshPanel();
-  setHint('colado de outro quadro: ' + conv.items.length + ' itens');
+  hint('hintPastedForeign', 'colado de outro quadro: %1 itens', conv.items.length);
   return true;
 }
 document.addEventListener('paste', e => {
@@ -2727,7 +2901,7 @@ function runSearch() {
   const q = searchIn.value.trim().toLowerCase();
   searchMatches = q ? scene.items.filter(i => typeof i.text === 'string' && i.text.toLowerCase().includes(q)).map(i => i.id) : [];
   searchIdx = -1;
-  searchInfo.textContent = q ? (searchMatches.length ? searchMatches.length + ' achado(s)' : 'nada') : '';
+  searchInfo.textContent = q ? (searchMatches.length ? t('searchFound', '%1 achado(s)').replace('%1', searchMatches.length) : t('searchNone', 'nada')) : '';
 }
 function stepSearch(dir) {
   if (!searchMatches.length) return;
@@ -2755,16 +2929,16 @@ function toggleLockSel() {
   for (const id of selIds) { const it = scene.items.find(i => i.id === id); if (it) it.locked = anyUnlocked; }
   pushPatch(before, subsetSnap(selIds), selIds);
   save(); draw();
-  setHint(anyUnlocked ? selIds.length + ' itens travados (Ctrl+Shift+L solta)' : 'itens destravados');
+  hint(anyUnlocked ? 'hintLocked' : 'hintUnlocked', anyUnlocked ? '%1 itens travados (Ctrl+Shift+L solta)' : '%1 itens destravados', selIds.length);
 }
 function unlockAll() {
   const locked = scene.items.filter(i => i.locked).map(i => i.id);
-  if (!locked.length) { setHint('nada travado no quadro'); return; }
+  if (!locked.length) { hint('hintNothingLocked', 'nada travado no quadro'); return; }
   const before = subsetSnap(locked);
   for (const id of locked) scene.items.find(i => i.id === id).locked = false;
   pushPatch(before, subsetSnap(locked), locked);
   save(); draw();
-  setHint(locked.length + ' itens destravados');
+  hint('hintUnlocked', '%1 itens destravados', locked.length);
 }
 
 /* ---------- exportar SVG ---------- */
@@ -2897,7 +3071,7 @@ function exportSvg() {
   const svg = buildSvg();
   if (!svg) return;
   download(svg, 'image/svg+xml', slug(scene.title) + '.svg');
-  setHint('SVG exportado');
+  hint('hintSvg', 'SVG exportado');
 }
 
 /* ---------- exportar Excalidraw ---------- */
@@ -2963,7 +3137,7 @@ async function exportExcalidraw() {
   if (!scene.items.length) return;
   const data = await toForeign();
   download(JSON.stringify(data, null, 2), 'application/json', slug(scene.title) + '.excalidraw');
-  setHint('exportado em formato Excalidraw — abre direto no excalidraw.com');
+  hint('hintExcali', 'exportado em formato Excalidraw — abre direto no excalidraw.com');
 }
 
 /* ---------- histórico ---------- */
@@ -2987,12 +3161,12 @@ async function openHistory() {
       const btn = el('button', { textContent: t('histRestore', 'Restaurar') }, item);
       btn.onclick = async () => {
         const r = await fetch('/history/revert', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file: h.file }) });
-        if (!r.ok) { setHint('não consegui restaurar'); return; }
+        if (!r.ok) { hint('hintRestoreFail', 'não consegui restaurar'); return; }
         const s = await (await fetch('/scene')).json();
         pushUndo(JSON.stringify(scene.items));
         applyIncoming(s);
         bdlg.classList.remove('open');
-        setHint('restaurado o snapshot rev ' + h.rev);
+        hint('hintRestored', 'restaurado o snapshot rev %1', h.rev);
       };
     }
   } catch {
@@ -3010,7 +3184,7 @@ function openBoards() {
 }
 
 async function newBoard() {
-  if (!confirm('Criar novo quadro? O quadro atual será salvo como backup.')) return;
+  if (!confirm(t('confirmNewBoard', 'Criar novo quadro? O quadro atual será salvo como backup.'))) return;
   const name = 'backup ' + new Date().toLocaleString('pt-BR');
   try {
     const r = await fetch('/boards', {
@@ -3020,7 +3194,7 @@ async function newBoard() {
     });
     if (!r.ok) throw new Error('http ' + r.status);
   } catch {
-    setHint('não consegui salvar o backup; quadro NÃO foi limpo');
+    hint('hintBackupFail', 'não consegui salvar o backup; quadro NÃO foi limpo');
     return;
   }
   pushUndo(JSON.stringify(scene.items));
@@ -3030,7 +3204,7 @@ async function newBoard() {
   zoomToFit();
   refreshPanel();
   draw();
-  setHint('Novo quadro criado — backup em "Quadros salvos", Ctrl+Z volta ao anterior');
+  hint('hintNewBoard', 'Novo quadro criado — backup em "Quadros salvos", Ctrl+Z volta ao anterior');
 }
 
 async function renderBoards() {
@@ -3046,7 +3220,7 @@ async function renderBoards() {
     const name = inp.value.trim();
     if (!name) { inp.focus(); return; }
     await fetch('/boards', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, scene }) });
-    setHint(`quadro "${name}" salvo`);
+    hint('hintBoardSaved', 'quadro "%1" salvo', name);
     inp.value = '';
     renderBoards();
   };
@@ -3075,7 +3249,7 @@ async function renderBoards() {
         save();
         zoomToFit(); refreshPanel(); markBgMode();
         bdlg.classList.remove('open');
-        setHint(`quadro "${b.title}" aberto — Ctrl+Z volta ao anterior`);
+        hint('hintBoardOpened', 'quadro "%1" aberto — Ctrl+Z volta ao anterior', b.title);
       };
       const del = el('button', { textContent: '×', title: 'Excluir quadro salvo' }, item);
       del.onclick = async () => {
@@ -3098,7 +3272,7 @@ function saveDrawrdisFile() {
   a.href = URL.createObjectURL(blob);
   a.download = name + '.drawrdis';
   a.click();
-  setHint('quadro salvo como ' + name + '.drawrdis — duplo clique nele reabre aqui');
+  hint('hintFileSaved', 'quadro salvo como %1.drawrdis — duplo clique nele reabre aqui', name);
 }
 function loadFileObject(f) {
   const rd = new FileReader();
@@ -3114,9 +3288,9 @@ function loadFileObject(f) {
       save();
       selIds = [];
       zoomToFit(); refreshPanel();
-      setHint('arquivo carregado: ' + f.name);
+      hint('hintFileLoaded', 'arquivo carregado: %1', f.name);
     } catch (err) {
-      setHint('não consegui ler esse arquivo: ' + err.message);
+      hint('hintFileFail', 'não consegui ler esse arquivo: %1', err.message);
     }
   };
   rd.readAsText(f);
@@ -3357,6 +3531,7 @@ function buildBottomBar() {
 const menuBtn = document.getElementById('menuBtn');
 menuBtn.addEventListener('click', e => { e.stopPropagation(); menuEl.classList.toggle('open'); });
 document.addEventListener('click', e => {
+  if (!cmenuEl.contains(e.target)) closeCtxMenu();
   if (!menuEl.contains(e.target) && e.target !== menuBtn) {
     menuEl.classList.remove('open');
     if (widMenuEl && !widMenuEl.contains(e.target) && e.target !== widBtn && !widBtn.contains(e.target)) { widMenuOpen = false; renderWidMenu(); }
@@ -3413,7 +3588,7 @@ function toggleLang() {
   localStorage.setItem('drawrdis-lang', lang);
   buildToolbar(); buildBottomBar(); buildMenu(); buildPanel();
   setHelp(); refreshPanel(); defaultHint();
-  setHint(lang === 'en' ? 'interface in English (dynamic hints still in Portuguese)' : 'interface em português');
+  setHint(lang === 'en' ? 'interface in English' : 'interface em português');
 }
 
 function markBgMode() {
@@ -3431,7 +3606,7 @@ function toggleTheme() {
 function toggleSnap() {
   snapOn = !snapOn;
   gridBtn.style.color = snapOn ? 'var(--accent)' : '';
-  setHint(snapOn ? 'grade magnética ligada (a cada 20px)' : 'grade magnética desligada');
+  hint(snapOn ? 'hintSnapOn' : 'hintSnapOff', snapOn ? 'grade magnética ligada (a cada 20px)' : 'grade magnética desligada');
 }
 function toggleZen() {
   zen = !zen;
@@ -3445,7 +3620,7 @@ document.getElementById('help').addEventListener('click', e => {
   if (e.target.id === 'help') e.currentTarget.classList.remove('open');
 });
 function resetBoard() {
-  if (!confirm('Apagar todo o quadro?')) return;
+  if (!confirm(t('confirmClear', 'Apagar todo o quadro?'))) return;
   pushUndo(JSON.stringify(scene.items));
   scene.items = [];
   selIds = [];
@@ -3491,7 +3666,7 @@ function openCpick(kind, anchor) {
   cpickKind = kind;
   cpick.innerHTML = '';
   const curColor = kind === 'stroke' ? cur.stroke : cur.fill;
-  const title = el('h5', { textContent: kind === 'stroke' ? 'Cor do traço' : 'Cor de fundo' }, cpick);
+  const title = el('h5', { textContent: kind === 'stroke' ? t('cpStroke', 'Cor do traço') : t('cpFill', 'Cor de fundo') }, cpick);
 
   const grid = el('div', { className: 'cgrid' }, cpick);
   const opts = kind === 'fill' ? ['transparent', ...FILLS.slice(1), ...PICK_HUES.slice(0, 6)] : [...PICK_NEUTRAL, ...PICK_HUES.slice(0, 6), ...PICK_HUES.slice(6)];
@@ -3500,13 +3675,13 @@ function openCpick(kind, anchor) {
   };
   const gridBtns = {};
   for (const c of opts) {
-    const b = el('button', { title: c === 'transparent' ? 'Sem cor' : c }, grid);
+    const b = el('button', { title: c === 'transparent' ? t('cpNone', 'Sem cor') : c }, grid);
     b.style.background = c === 'transparent' ? 'repeating-linear-gradient(45deg,#fff,#fff 3px,#ddd 3px,#ddd 6px)' : c;
     b.onclick = () => { applyPick(c); mark(); refreshPanel(); };
     gridBtns[c] = b;
   }
 
-  el('h5', { textContent: 'Matizes' }, cpick);
+  el('h5', { textContent: t('cpHues', 'Matizes') }, cpick);
   const sh = el('div', { className: 'cgrid' }, cpick);
   const base = /^#([0-9a-f]{6})$/i.test(curColor) ? curColor : (kind === 'stroke' ? '#1e1e1e' : '#ffc9c9');
   for (const c of [shade(base, -0.4), shade(base, -0.18), base, shade(base, 0.35), shade(base, 0.65), shade(base, 0.85)]) {
@@ -3516,7 +3691,7 @@ function openCpick(kind, anchor) {
   }
 
   const hexRow = el('div', { className: 'chex' }, cpick);
-  const prev = el('span', { className: 'cprev', title: 'Cor atual' }, hexRow);
+  const prev = el('span', { className: 'cprev', title: t('cpCurrent', 'Cor atual') }, hexRow);
   el('span', { textContent: '#' }, hexRow);
   const inp = el('input', { maxLength: 6, spellcheck: false }, hexRow);
   inp.value = /^#([0-9a-f]{6})$/i.test(curColor) ? curColor.slice(1) : '';
@@ -3571,7 +3746,7 @@ function buildPanel() {
     b.onclick = () => setStyle({ stroke: c });
     panel.strokeBtns[c] = b;
   }
-  panel.strokeCustom = el('button', { className: 'sw custom', title: 'Cor personalizada' }, rowS);
+  panel.strokeCustom = el('button', { className: 'sw custom', title: t('cpCustom', 'Cor personalizada') }, rowS);
   panel.strokeCustom.onclick = e => { e.stopPropagation(); openCpick('stroke', panel.strokeCustom); };
 
   const sFill = secPanel('shape', t('panelFill', 'Fundo'));
@@ -3585,7 +3760,7 @@ function buildPanel() {
     b.onclick = () => setStyle({ fill: c });
     panel.fillBtns[c] = b;
   }
-  panel.fillCustom = el('button', { className: 'sw custom', title: 'Cor personalizada' }, rowB);
+  panel.fillCustom = el('button', { className: 'sw custom', title: t('cpCustom', 'Cor personalizada') }, rowB);
   panel.fillCustom.onclick = e => { e.stopPropagation(); openCpick('fill', panel.fillCustom); };
   panel.fillStyle = segRow(sFill, FILL_STYLES, v => setStyle({ fillStyle: v }));
 
@@ -3663,7 +3838,7 @@ function deleteSelection() {
 }
 /* ---------- fluxo: Ctrl+setas clona o elemento na direção e liga ---------- */
 function createFlowDir(dir) {
-  if (!selIds.length) { setHint('selecione um elemento e use Ctrl+setas'); return; }
+  if (!selIds.length) { hint('hintFlowNeedSel', 'selecione um elemento e use Ctrl+setas'); return; }
   const ord0 = orderIds();
   const sel = scene.items.filter(i => selIds.includes(i.id));
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
@@ -3704,12 +3879,12 @@ function createFlowDir(dir) {
   selIds = [counter.id];
   setTool('select');
   save(); draw(); refreshPanel();
-  setHint('fluxo criado ' + ({ up: 'acima', down: 'abaixo', left: 'à esquerda', right: 'à direita' })[dir]);
+  hint('hintFlowDir', 'fluxo criado %1', ({ up: t('dirUp', 'acima'), down: t('dirDown', 'abaixo'), left: t('dirLeft', 'à esquerda'), right: t('dirRight', 'à direita') })[dir]);
 }
 /* ---------- fluxo: Ctrl+Enter clona a tela e liga com seta ---------- */
 function createFlow() {
   const sel = scene.items.find(i => i.id === selIds[0]);
-  if (!sel) { setHint('selecione um elemento pra criar o fluxo'); return; }
+  if (!sel) { hint('hintFlowNeedSel2', 'selecione um elemento pra criar o fluxo'); return; }
   const sb = rotAABB(sel);
   let frame = null, fb = null;
   for (const it of scene.items) {
@@ -3764,7 +3939,7 @@ function createFlow() {
   selIds = [counterpart.id];
   setTool('select');
   save(); draw(); refreshPanel();
-  setHint('fluxo criado — a tela nova está ligada por seta');
+  hint('hintFlowCreated', 'fluxo criado — a tela nova está ligada por seta');
 }
 function selFirst() {
   return scene.items.find(i => i.id === selIds[0]);
@@ -3877,13 +4052,13 @@ function defaultHint() {
   if (zen) { hintEl.textContent = ''; return; }
   const it = selFirst();
   if (tool === 'select' && selIds.length === 1 && it?.type === 'text') {
-    hintEl.innerHTML = 'Duplo clique ou <kbd>Enter</kbd> para editar o texto';
+    hintEl.innerHTML = t('hintEdit', 'Duplo clique ou <kbd>Enter</kbd> para editar o texto');
   } else if (shapeToolActive()) {
-    hintEl.innerHTML = 'Arraste para desenhar · <kbd>Shift</kbd> trava proporção · <kbd>Shift</kbd> no redimensionar mantém proporção · <kbd>Ctrl</kbd> expande do centro';
+    hintEl.innerHTML = t('hintDraw', 'Arraste para desenhar · <kbd>Shift</kbd> trava proporção · <kbd>Shift</kbd> no redimensionar mantém proporção · <kbd>Ctrl</kbd> expande do centro');
   } else if (tool === 'hand') {
-    hintEl.innerHTML = 'Arraste para mover o quadro';
+    hintEl.innerHTML = t('hintHand', 'Arraste para mover o quadro');
   } else {
-    hintEl.innerHTML = '<kbd>1-9,0</kbd> ferramentas · <kbd>Q</kbd> trava · <kbd>Enter</kbd> texto · <kbd>Ctrl+Enter</kbd> cria fluxo · <kbd>Ctrl+O</kbd> abre · <kbd>?</kbd> atalhos';
+    hintEl.innerHTML = t('hintKeys', '<kbd>1-9</kbd> ferramentas · <kbd>Q</kbd> trava · <kbd>Enter</kbd> texto · <kbd>Ctrl+Enter</kbd> fluxo · <kbd>Ctrl+O</kbd> abre · <kbd>?</kbd> atalhos');
   }
 }
 function shapeToolActive() {
@@ -3917,7 +4092,7 @@ function setLock(v) {
   lockTool = v;
   lockBtn.classList.toggle('on', v);
   lockBtn.innerHTML = icon(v ? 'lock' : 'unlock');
-  setHint(v ? 'ferramenta travada' : 'ferramenta destravada');
+  hint(v ? 'hintToolLocked' : 'hintToolUnlocked', v ? 'ferramenta travada' : 'ferramenta destravada');
 }
 
 /* ---------- ajuda ---------- */
@@ -3944,6 +4119,8 @@ const HELP_PT = `
 <tr><td>Alt+P</td><td>modo apresentação: sem ferramentas, clicar num link salta para a tela</td></tr>
 <tr><td>Ctrl+Shift+L</td><td>travar/destravar a seleção (travado não seleciona, não move, não apaga)</td></tr>
 <tr><td>Ctrl+F</td><td>buscar texto no quadro (Enter navega entre os achados)</td></tr>
+<tr><td>Botão direito</td><td>menu de contexto: copiar, duplicar, apagar, reordenar, agrupar, travar, link, editar</td></tr>
+<tr><td>Duplo clique (forma)</td><td>cria um rótulo centralizado sobre a forma</td></tr>
 <tr><td>Alt + clique</td><td>selecionar um item sozinho dentro de um grupo</td></tr>
 <tr><td>Alt + - / = (texto)</td><td>fonte −/+ 0,25px</td></tr>
 <tr><td>Setas ligadas</td><td>arraste a ponta perto de uma forma para grudar; mova a forma e a seta acompanha</td></tr>
@@ -3978,6 +4155,8 @@ const HELP_EN = `
 <tr><td>Alt+P</td><td>present mode: no tools, clicking a link jumps to the screen</td></tr>
 <tr><td>Ctrl+Shift+L</td><td>lock/unlock selection (locked items can't be selected, moved or deleted)</td></tr>
 <tr><td>Ctrl+F</td><td>search text on the board (Enter cycles matches)</td></tr>
+<tr><td>Right-click</td><td>context menu: copy, duplicate, delete, reorder, group, lock, link, edit</td></tr>
+<tr><td>Double-click (shape)</td><td>drops a centered label on the shape</td></tr>
 <tr><td>Alt + click</td><td>select a single item inside a group</td></tr>
 <tr><td>Alt + - / = (text)</td><td>font −/+ 0.25px</td></tr>
 <tr><td>Bound arrows</td><td>drag an end near a shape to snap it; move the shape, the arrow follows</td></tr>
@@ -4602,12 +4781,78 @@ async function runTests() {
       log('history: replace total tira snapshot pre-replace', h.some(x => x.tag === 'pre-replace'), '');
     }
 
-    // i18n do chrome
+    // i18n do chrome + dicas dinâmicas
     {
       toggleLang();
       const enMenu = Array.from(menuEl.querySelectorAll('button span')).some(s => /Export PNG/.test(s.textContent));
+      hint('hintUngrouped', 'grupo desfeito');
+      const enHint = /group cleared/.test(hintEl.textContent);
       toggleLang();
-      log('i18n: toggle troca os rótulos do menu', enMenu, '');
+      log('i18n: toggle troca menu e dicas dinâmicas', enMenu && enHint, `menu=${enMenu} hint=${enHint}`);
+    }
+
+    // smart guides: mover alinha borda com outro item e snapa
+    {
+      z = 1; panX = 0; panY = 0; draw();
+      scene.items.push(
+        { id: 'sg1', type: 'rect', x: 100, y: 100, w: 40, h: 40, stroke: '#1b1b1f', strokeWidth: 2, roughness: 1 },
+        { id: 'sg2', type: 'rect', x: 300, y: 103, w: 40, h: 40, stroke: '#1b1b1f', strokeWidth: 2, roughness: 1 },
+      );
+      setTool('select'); selIds = ['sg2'];
+      pd(320, 123); pm(121, 123); pu(121, 123); // borda esquerda de sg2 a ~1px de sg1
+      await sleep(30);
+      const sg2 = scene.items.find(i => i.id === 'sg2');
+      log('smart guide: borda alinha e snapa', !!sg2 && Math.abs(sg2.x - 100) < 0.5, sg2 && `x=${sg2.x}`);
+      scene.items = scene.items.filter(i => !['sg1', 'sg2'].includes(i.id));
+      selIds = []; save(); draw();
+    }
+
+    // menu de contexto: clique direito seleciona e abre
+    {
+      scene.items.push({ id: 'cm1', type: 'rect', x: 500, y: 500, w: 40, h: 40, stroke: '#1b1b1f', strokeWidth: 2, roughness: 1 });
+      z = 1; panX = 0; panY = 0; draw();
+      cv.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 520, clientY: 520 }));
+      await sleep(20);
+      const opened = cmenuEl.classList.contains('open') && selIds.includes('cm1');
+      closeCtxMenu();
+      scene.items = scene.items.filter(i => i.id !== 'cm1');
+      selIds = []; save(); draw();
+      log('menu de contexto: clique direito seleciona e abre', opened, '');
+    }
+
+    // duplo clique em forma cria texto centralizado (descartado se vazio)
+    {
+      scene.items.push({ id: 'dc1', type: 'rect', x: 600, y: 600, w: 80, h: 60, stroke: '#1b1b1f', strokeWidth: 2, roughness: 1 });
+      z = 1; panX = 0; panY = 0; draw();
+      const before = scene.items.length;
+      cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 640, clientY: 630 }));
+      await sleep(30);
+      const created = scene.items.length === before + 1 && editingId !== null;
+      const centered = scene.items.some(i => i.type === 'text' && i.textAlign === 'center');
+      if (editingId !== null) commitEditor(); // texto vazio → descarta
+      await sleep(20);
+      const discarded = scene.items.length === before;
+      scene.items = scene.items.filter(i => i.id !== 'dc1');
+      selIds = []; save(); draw();
+      log('duplo clique em forma cria rótulo centralizado', created && centered && discarded, '');
+    }
+
+    // order só vai no save quando a ordem de camadas muda
+    {
+      scene.items.push(
+        { id: 'oz1', type: 'rect', x: 0, y: 4000, w: 10, h: 10 },
+        { id: 'oz2', type: 'rect', x: 0, y: 4020, w: 10, h: 10 },
+      );
+      save(); await doSave(); await sleep(50);
+      const ordBefore = (await (await fetch('/scene')).json()).items.map(i => i.id).join('|');
+      selIds = ['oz1']; orderSel('front'); save(); await doSave(); await sleep(50);
+      const sc = await (await fetch('/scene')).json();
+      const ordAfter = sc.items.map(i => i.id).join('|');
+      const i1 = ordBefore.indexOf('oz1'), i2 = ordBefore.indexOf('oz2');
+      const j1 = ordAfter.indexOf('oz1'), j2 = ordAfter.indexOf('oz2');
+      log('order: trazer p/ frente reordena no servidor', i1 < i2 && j1 > j2, `antes ${i1}/${i2} depois ${j1}/${j2}`);
+      scene.items = scene.items.filter(i => !['oz1', 'oz2'].includes(i.id));
+      selIds = []; save(); draw();
     }
 
     await sleep(700);

@@ -66,7 +66,7 @@ function writeFileBoard(scene) {
   for (const it of scene.items) if (!it.id) it.id = uid();
   scene.rev = (scene.rev || 0) + 1;
   const tmp = BOARD + '.' + process.pid + '.' + crypto.randomBytes(3).toString('hex') + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(scene, null, 2));
+  fs.writeFileSync(tmp, JSON.stringify(scene));
   fs.renameSync(tmp, BOARD);
   return scene;
 }
