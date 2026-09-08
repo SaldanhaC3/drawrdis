@@ -411,19 +411,22 @@ const server = http.createServer(async (req, res) => {
       for (const id of body.remove || []) byId.delete(String(id));
       for (const it of body.update || []) {
         if (!it || !it.id) throw new Error('update sem id');
-        if (body.merge) {
-          // patch de campos: só o que o agente mandou muda. Se o humano moveu o
-          // item entre a leitura e o patch do agente, x/y dele sobrevivem.
-          // null num campo apaga o campo (merge raso não expressa "delete").
-          const ex = byId.get(String(it.id));
-          if (!ex) throw new Error(`update: id ${it.id} não existe`);
-          const merged = Object.assign({}, ex);
-          for (const [k, v] of Object.entries(it)) {
-            if (k === 'id') continue;
-            if (v === null) delete merged[k]; else merged[k] = v;
-          }
-          byId.set(String(it.id), merged);
-        } else byId.set(String(it.id), it);
+        if (!body.merge) {
+          // update sem merge é o padrão antigo de sobrescrever o item inteiro:
+          // reverteria edição concorrente do humano. Só o merge de campos é aceito.
+          throw new Error('update exige merge:true (patch de campos)');
+        }
+        // patch de campos: só o que o agente mandou muda. Se o humano moveu o
+        // item entre a leitura e o patch do agente, x/y dele sobrevivem.
+        // null num campo apaga o campo (merge raso não expressa "delete").
+        const ex = byId.get(String(it.id));
+        if (!ex) throw new Error(`update: id ${it.id} não existe`);
+        const merged = Object.assign({}, ex);
+        for (const [k, v] of Object.entries(it)) {
+          if (k === 'id') continue;
+          if (v === null) delete merged[k]; else merged[k] = v;
+        }
+        byId.set(String(it.id), merged);
       }
       for (const it of body.add || []) {
         if (!it || !it.id) throw new Error('add sem id');

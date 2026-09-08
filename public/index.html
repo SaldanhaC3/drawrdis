@@ -971,14 +971,15 @@ function drawItems(g, cull) {
   }
 }
 function imgFor(it) {
-  let im = imgCache.get(it.src);
+  const src = it.src || ('' + it.id); // /img/... pode aparecer com portas/prefixos diferentes; por id o cache é estável
+  let im = imgCache.get(src);
   if (!im) {
     if (imgCache.size > 60) imgCache.delete(imgCache.keys().next().value); // teto simples, evita crescer sem limite
     im = new Image();
     im.onload = () => draw();
-    im.onerror = () => imgCache.delete(it.src);
+    im.onerror = () => imgCache.delete(src);
     im.src = it.src;
-    imgCache.set(it.src, im);
+    imgCache.set(src, im);
   }
   return im.complete && im.naturalWidth ? im : null;
 }
@@ -1240,6 +1241,7 @@ function pushPatch(before, after, ids) { pushOp(before, after, ids); }
 function pushOp(before, after, ids, ordB, ordA) {
   undoStack.push({ p: { b: JSON.stringify(before), a: JSON.stringify(after), ids, ordB, ordA } });
   if (undoStack.length > 80) undoStack.shift();
+  if (undoStack.length > 80) undoStack.shift();
   redoStack.length = 0;
   refreshBL();
 }
@@ -1343,6 +1345,16 @@ function rebase(s) {
   baseStr = new Map(s.items.map(i => [i.id, JSON.stringify(i)]));
   lastRev = s.rev || 0;
 }
+// Reconcilia o editor com o servidor depois de um gap (restart do servidor,
+// replace total via MCP, outra aba que importou). Usa a rev corrente para não
+// regredir para uma cena mais velha.
+async function resync() {
+  try {
+    const full = await (await fetch('/scene')).json();
+    if (full && full.rev && lastRev > full.rev) return;
+    if (full) applyIncoming(full);
+  } catch { /* sem servidor: nada a fazer */ }
+}
 function save() {
   dirty = true;
   setStatus(t('saving', 'salvando…'));
@@ -1359,7 +1371,22 @@ async function doSave() {
       if (b === undefined) { it.by = 'user'; add.push(it); sent.push([it.id, JSON.stringify(it)]); }
       else {
         const j = JSON.stringify(it);
-        if (b !== j) { it.by = 'user'; update.push(it); sent.push([it.id, JSON.stringify(it)]); }
+        if (b !== j) {
+          it.by = 'user';
+          // merge:true no servidor só aplica campos presentes no patch; campos
+          // que o editor REMOVEU (desagrupar apaga g; dropBindings apaga
+          // startBind/endBind) precisam chegar como null para o servidor apagar.
+          const oldItem = JSON.parse(b);
+          let withDels = it;
+          for (const k of ['g', 'startBind', 'endBind']) {
+            if (k in oldItem && !(k in it)) {
+              if (withDels === it) withDels = Object.assign({}, it);
+              withDels[k] = null;
+            }
+          }
+          update.push(withDels);
+          sent.push([it.id, j]);
+        }
       }
     }
     const remove = [];
@@ -1368,8 +1395,9 @@ async function doSave() {
       const res = await fetch('/sync', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ rev: lastRev, add, update, remove, order: scene.items.map(i => i.id) }),
+        body: JSON.stringify({ rev: lastRev, add, update, remove, order: scene.items.map(i => i.id), merge: true }),
       });
+      if (res.status === 409) { await resync(); return; } // servidor reiniciou ou cena trocou: alinha com o servidor
       if (!res.ok) throw new Error((await res.text()).slice(0, 120));
       const r = await res.json();
       for (const [id, j] of sent) baseStr.set(id, j);
@@ -1470,7 +1498,13 @@ function showAgentChip(n) {
 function setStatus(txt) { saveEl.textContent = txt; }
 function connect() {
   const es = new EventSource('/events');
-  es.onopen = () => { liveEl.classList.add('on'); livetxt.textContent = t('live', 'ao vivo'); };
+  es.onopen = () => {
+    liveEl.classList.add('on');
+    livetxt.textContent = t('live', 'ao vivo');
+    // reconectou: o SSE não reenvia o estado atual, então alinha com o servidor
+    // (pega também o caso de outra aba ter trocado o board enquanto estávamos fora)
+    if (lastRev > 0) resync();
+  };
   es.onerror = () => { liveEl.classList.remove('on'); livetxt.textContent = t('reconnecting', 'reconectando…'); };
   es.addEventListener('scene', e => {
     const s = JSON.parse(e.data);
@@ -2137,7 +2171,8 @@ cv.addEventListener('pointerup', e => {
         const t2 = bindTargetAt(it.x2, it.y2, it);
         if (t2) it.endBind = e.altKey ? { id: t2.id, ...relPoint(t2, it.x2, it.y2) } : { id: t2.id };
       }
-      pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], gesture.ord0, orderIds());
+      if (gesture.ord0) pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], gesture.ord0, orderIds());
+      else pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], orderIds(), orderIds());
       save();
       if (!lockTool) { setTool('select'); refreshPanel(); }
     }
@@ -2262,6 +2297,7 @@ function commitEditor() {
   const val = ed.value.replace(/\n+$/, '');
   if (gesture.newText && !val.trim()) {
     scene.items = scene.items.filter(i => i.id !== it.id);
+    if (gesture.ord0) { pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], gesture.ord0, orderIds()); save(); }
   } else if (val !== it.text) {
     it.text = val;
     ensureTextSize(it);
@@ -3071,8 +3107,10 @@ function loadFileObject(f) {
       const data = JSON.parse(rd.result);
       const converted = looksForeign(data) ? fromForeign(data) : data;
       if (!Array.isArray(converted.items)) throw new Error('sem items');
+      // snapshot do board ANTES da importação: o Ctrl+Z depois disso volta para
+      // o board vivo, não para a cena da importação sendo tratada como a nova.
+      pushUndo(JSON.stringify(scene.items));
       scene = { version: 1, title: converted.title || scene.title, bg: converted.bg || null, items: converted.items };
-      pushUndo(JSON.stringify([]));
       save();
       selIds = [];
       zoomToFit(); refreshPanel();
@@ -4392,11 +4430,13 @@ async function runTests() {
     // merge-patch: agente toca só um campo, coordenadas do humano sobrevivem
     {
       await fetch('/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ add: [{ id: 'mp1', type: 'rect', x: 100, y: 100, w: 40, h: 40, fill: '#fff' }] }) });
-      await fetch('/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ update: [{ id: 'mp1', type: 'rect', x: 222, y: 100, w: 40, h: 40, fill: '#fff' }] }) });
+      await fetch('/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ update: [{ id: 'mp1', x: 222 }], merge: true }) });
       await fetch('/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ update: [{ id: 'mp1', fill: '#f00', by: 'agent' }], merge: true }) });
       const sc = await (await fetch('/scene')).json();
       const mp = sc.items.find(i => i.id === 'mp1');
       log('merge-patch: agente muda só o fill e x do humano sobrevive', !!mp && mp.x === 222 && mp.fill === '#f00' && mp.by === 'agent', mp && `x=${mp.x} fill=${mp.fill}`);
+      const rNoMerge = await fetch('/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ update: [{ id: 'mp1', x: 300 }] }) });
+      log('sync: update sem merge é rejeitado', rNoMerge.status >= 400, 'http ' + rNoMerge.status);
       await fetch('/sync', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ remove: ['mp1'] }) });
     }
 

@@ -1,6 +1,7 @@
 node_modules/
 board.json
 boards/
+files/
 *.log
 _*.png
 _board_backup.json
