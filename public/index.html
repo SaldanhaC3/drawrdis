@@ -3052,6 +3052,7 @@ function linkTargetBox(it) {
   }
   return rotAABB(it);
 }
+let jumpAnim = false; // true enquanto a animação de jumpToItem tem quadro na fila
 function jumpToItem(target) {
   const b = linkTargetBox(target);
   const pad = 60;
@@ -3060,12 +3061,13 @@ function jumpToItem(target) {
   const ppx = (W - b.w * nz) / 2 - b.bx * nz, ppy = (H - b.h * nz) / 2 - b.by * nz;
   const t0 = performance.now(), dur = 320;
   const ease = k => 1 - Math.pow(1 - k, 3);
+  jumpAnim = true;
   (function step(now) {
     const k = Math.min(1, (now - t0) / dur), e = ease(k);
     z = z0 + (nz - z0) * e; panX = px0 + (ppx - px0) * e; panY = py0 + (ppy - py0) * e;
     zoomLbl.textContent = Math.round(z * 100) + '%';
     draw();
-    if (k < 1) requestAnimationFrame(step);
+    if (k < 1) requestAnimationFrame(step); else jumpAnim = false;
   })(t0);
 }
 function togglePresent() {
@@ -4977,7 +4979,10 @@ async function runTests() {
       log('link: modo link + clique no destino grava link.to', !!src && !!src.link && src.link.to === 'ln2', JSON.stringify(src && src.link));
       togglePresent();
       const inPresent = present;
-      await sleep(400); // deixa a animação do jump terminar
+      // a animação do jumpToItem roda em rAF, que o headless pode atrasar no
+      // tempo real: esperar ela terminar de fato, senão o último quadro cai no
+      // meio dos testes seguintes e sobrescreve o z que eles acabaram de setar
+      for (let i = 0; i < 80 && jumpAnim; i++) await sleep(25);
       togglePresent();
       log('present: entra e sai sem erro', inPresent && !present, '');
       scene.items = scene.items.filter(i => !['ln1', 'ln2'].includes(i.id));
