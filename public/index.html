@@ -5070,27 +5070,35 @@ async function runTests() {
       z = 1; panX = 0; panY = 0; draw();
       let im = null;
       for (let i = 0; i < 60 && !im; i++) { await sleep(50); im = imgFor(scene.items.find(i => i.id === 'cr1')); }
-      cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 740, clientY: 520 }));
+      // coords de tela derivadas do MUNDO: o teste não depende de z/pan e nem do
+      // tamanho da janela headless (que difere entre CI e máquina local)
+      const P = (wx, wy) => [Math.round(w2sX(wx)), Math.round(w2sY(wy))];
+      const dbl = (wx, wy) => { const [x, y] = P(wx, wy); cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: x, clientY: y })); };
+      const [cx, cy] = P(740, 520);
+      dbl(740, 520);
       await sleep(30);
       const entered = cropId === 'cr1';
-      pd(780, 540); pm(760, 520); pu(760, 520); // alça SE: recorta para 60x20
+      const hitDiag = (() => { const it = hitItem(s2wX(cx), s2wY(cy)); return it ? it.type + ':' + it.id : 'null'; })();
+      const [hx, hy] = P(780, 540), [tx, ty] = P(760, 520);
+      pd(hx, hy); pm(tx, ty); pu(tx, ty); // alça SE: recorta para 60x20
       await sleep(20);
       key('Enter');
       await sleep(20);
       const cr1 = scene.items.find(i => i.id === 'cr1');
       const applied = cropId === null && cr1 && Math.abs(cr1.w - 60) < 1 && Math.abs(cr1.h - 20) < 1 &&
         cr1.crop && Math.abs(cr1.crop.right - 0.25) < 0.01 && Math.abs(cr1.crop.bottom - 0.5) < 0.01;
-      cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 730, clientY: 510 }));
+      dbl(730, 510);
       await sleep(20);
       const wBefore = cr1.w, cropBefore = JSON.stringify(cr1.crop);
-      pd(760, 520); pm(780, 540); pu(780, 540); // abre até a imagem inteira...
-      key('Escape');                            // ...mas cancela
+      const [hx2, hy2] = P(760, 520), [tx2, ty2] = P(780, 540);
+      pd(hx2, hy2); pm(tx2, ty2); pu(tx2, ty2); // abre até a imagem inteira...
+      key('Escape');                             // ...mas cancela
       await sleep(20);
       const cancelled = cropId === null && cr1.w === wBefore && JSON.stringify(cr1.crop) === cropBefore;
       scene.items = scene.items.filter(i => i.id !== 'cr1');
       selIds = []; save(); draw();
       log('recorte: duplo clique entra, alça + Enter aplica, Esc cancela', entered && !!im && applied && cancelled,
-        `entered=${entered} im=${!!im} applied=${applied} cancelled=${cancelled} w=${cr1 && cr1.w} h=${cr1 && cr1.h} crop=${cr1 && JSON.stringify(cr1.crop)}`);
+        `entered=${entered} im=${!!im} applied=${applied} cancelled=${cancelled} w=${cr1 && cr1.w} h=${cr1 && cr1.h} crop=${cr1 && JSON.stringify(cr1.crop)} z=${z.toFixed(2)} pan=${panX},${panY} hit=${hitDiag}`);
     }
 
     // order só vai no save quando a ordem de camadas muda
