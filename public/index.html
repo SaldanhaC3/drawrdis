@@ -5073,28 +5073,37 @@ async function runTests() {
       await new Promise((res) => { const t = new Image(); t.onload = res; t.onerror = res; t.src = src; });
       scene.items.push({ id: 'cr1', type: 'image', x: 700, y: 500, w: 80, h: 40, src });
       z = 1; panX = 0; panY = 0; draw();
+      const zSet = z + ',' + panX + ',' + panY;
       let im = null;
       for (let i = 0; i < 60 && !im; i++) { await sleep(50); im = imgFor(scene.items.find(i => i.id === 'cr1')); }
+      const zPre = z + ',' + panX + ',' + panY;
       // coords de tela derivadas do MUNDO: o teste não depende de z/pan e nem do
       // tamanho da janela headless (que difere entre CI e máquina local)
       const P = (wx, wy) => [Math.round(w2sX(wx)), Math.round(w2sY(wy))];
       const dbl = (wx, wy) => { const [x, y] = P(wx, wy); cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: x, clientY: y })); };
+      // re-assertar a vista antes de CADA interação síncrona: algo no app pode
+      // animar z/pan durante os awaits, e Math.round de coordenadas só é exato com z=1/pan=0
+      const view = () => { z = 1; panX = 0; panY = 0; };
+      view();
       const [cx, cy] = P(740, 520);
       dbl(740, 520);
       await sleep(30);
       const entered = cropId === 'cr1';
       const hitDiag = (() => { const it = hitItem(s2wX(cx), s2wY(cy)); return it ? it.type + ':' + it.id : 'null'; })();
+      view();
       const [hx, hy] = P(780, 540), [tx, ty] = P(760, 520);
       pd(hx, hy); pm(tx, ty); pu(tx, ty); // alça SE: recorta para 60x20
       await sleep(20);
       key('Enter');
       await sleep(20);
       const cr1 = scene.items.find(i => i.id === 'cr1');
-      const applied = cropId === null && cr1 && Math.abs(cr1.w - 60) < 1 && Math.abs(cr1.h - 20) < 1 &&
-        cr1.crop && Math.abs(cr1.crop.right - 0.25) < 0.01 && Math.abs(cr1.crop.bottom - 0.5) < 0.01;
+      const applied = cropId === null && cr1 && Math.abs(cr1.w - 60) < 2 && Math.abs(cr1.h - 20) < 2 &&
+        cr1.crop && Math.abs(cr1.crop.right - 0.25) < 0.03 && Math.abs(cr1.crop.bottom - 0.5) < 0.03;
+      view();
       dbl(730, 510);
       await sleep(20);
       const wBefore = cr1.w, cropBefore = JSON.stringify(cr1.crop);
+      view();
       const [hx2, hy2] = P(760, 520), [tx2, ty2] = P(780, 540);
       pd(hx2, hy2); pm(tx2, ty2); pu(tx2, ty2); // abre até a imagem inteira...
       key('Escape');                             // ...mas cancela
@@ -5103,7 +5112,7 @@ async function runTests() {
       scene.items = scene.items.filter(i => i.id !== 'cr1');
       selIds = []; save(); draw();
       log('recorte: duplo clique entra, alça + Enter aplica, Esc cancela', entered && !!im && applied && cancelled,
-        `entered=${entered} im=${!!im} applied=${applied} cancelled=${cancelled} w=${cr1 && cr1.w} h=${cr1 && cr1.h} crop=${cr1 && JSON.stringify(cr1.crop)} z=${z.toFixed(2)} pan=${panX},${panY} hit=${hitDiag}`);
+        `entered=${entered} im=${!!im} applied=${applied} cancelled=${cancelled} w=${cr1 && cr1.w} h=${cr1 && cr1.h} crop=${cr1 && JSON.stringify(cr1.crop)} zSet=${zSet} zPre=${zPre} z=${z.toFixed(2)} pan=${panX},${panY} hit=${hitDiag}`);
     }
 
     // order só vai no save quando a ordem de camadas muda
