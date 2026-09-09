@@ -28,6 +28,7 @@ Agentes de código são ótimos com código e cegos em design. O Drawrdis dá ol
 - **Guias de alinhamento**: arrastar um item encaixa bordas e centros nos vizinhos e mostra linhas-guia vermelhas
 - **Menu de contexto** (botão direito) em qualquer seleção: copiar, duplicar, apagar, reordenar, agrupar, travar, criar link, editar texto
 - Duplo clique numa forma solta um rótulo centralizado sobre ela; a barra de status mostra as coordenadas do cursor ao vivo
+- **Recorte de imagem**: duplo clique numa imagem abre o modo de recorte (arraste as alças, Enter aplica, Esc cancela); o recorte é um campo no JSON, então o agente também recorta via `update_items`
 - Colaboração com seu agente: push via SSE (diffs incrementais), quadro em arquivo, ferramentas MCP
 - **Escrita concorrente segura**: agente e humano editando ao mesmo tempo não se apagam (merge por item, patch de campos, número de versão do quadro e um undo cirúrgico que nunca desfaz o trabalho do agente)
 - Projetos nomeados (salvar/abrir vários quadros), arquivos portáteis `.drawrdis`

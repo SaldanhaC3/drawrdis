@@ -109,7 +109,7 @@ and `locked` (true = the human froze it; don't move or delete locked items).
 | `text` | `x,y,text`, `fontSize`, `bold`, `fontFamily` ("hand"|"normal"|"code"), `textAlign`, `w` (container; text wraps), `autoW:true` grows with text |
 | `line`/`arrow` | `x,y,x2,y2`, `mids:[[x,y],...]` curve points, `startBind:{id}`, `endBind:{id}` |
 | `draw` | `points:[[x,y],...]` freehand |
-| `image` | `x,y,w,h`, `src` (URL `/img/<hash>.png` preferred — get it via `POST /img`; dataURL still works but bloats the board file) |
+| `image` | `x,y,w,h`, `src` (URL `/img/<hash>.png` preferred — get it via `POST /img`; dataURL still works but bloats the board file), `crop` `{top,left,bottom,right}` fractions 0..1 of the source (the box shows just the cropped region; omit for no crop) |
 
 **Bound arrows**: with `startBind`/`endBind` set to a shape's `id`, the end
 recalculates on the shape's border (toward the other end) whenever the shape

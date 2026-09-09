@@ -30,6 +30,7 @@ AI coding agents are great at code and blind at design. Drawrdis gives them eyes
 - **Smart alignment guides**: dragging an item snaps its edges/centers to neighbors and shows red guide lines
 - **Right-click context menu** on any selection: copy, duplicate, delete, reorder, group, lock, create link, edit text
 - Double-click a shape to drop a centered label on it; the status bar shows live cursor coordinates
+- **Image crop**: double-click an image to enter crop mode (drag the handles, Enter applies, Esc cancels); the crop is a field in the JSON, so the agent can crop too via `update_items`
 - Live collaboration with your agent: SSE push (incremental diffs), file-based board, MCP tools
 - **Concurrent-safe writes**: agent and human editing at the same time don't erase each other (per-item merge, field-level patches, a board revision number, and surgical undo that never reverts the agent's work)
 - Named projects (save/open multiple boards), portable `.drawrdis` files

@@ -47,7 +47,10 @@ function findChrome() {
     'google-chrome', 'google-chrome-stable', 'chromium-browser', 'chromium', 'msedge',
   ].filter(Boolean);
   for (const c of candidates) {
-    try { execSync(`"${c}" --version`, { stdio: 'ignore' }); return c; } catch { /* next */ }
+    // on Windows, `chrome.exe --version` launches the browser and never returns.
+    // For absolute paths just check the file exists; only probe bare PATH names.
+    if (path.isAbsolute(c)) { if (fs.existsSync(c)) return c; continue; }
+    try { execSync(`"${c}" --version`, { stdio: 'ignore', timeout: 5000 }); return c; } catch { /* next */ }
   }
   throw new Error('no Chromium found; install Google Chrome or set CHROME_PATH');
 }

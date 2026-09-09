@@ -325,6 +325,7 @@ const EN = {
   hintLinkCreated: 'link created — in present mode (Alt+P) clicking here jumps to the destination',
   hintLinkDest: 'click a destination item (Esc cancels)', hintCopied: 'copied',
   hintLinkNav: 'click the navigation link destination (Esc cancels)', hintFont: 'font %1px',
+  hintCrop: 'drag the handles to crop — Enter applies, Esc cancels',
   hintPastedForeign: 'pasted from another board: %1 items',
   hintLocked: '%1 items locked (Ctrl+Shift+L to unlock)', hintUnlocked: '%1 items unlocked',
   hintNothingLocked: 'nothing locked on the board', hintSvg: 'SVG exported',
@@ -392,6 +393,9 @@ let mode = null;           // pan|move|resize|rotate|create|marquee
 let spaceDown = false;
 let editingId = null;
 let gesture = {}, gestureSnap = null;
+// modo recorte de imagem: cropId é o item sendo recortado; cropState guarda a
+// caixa do recorte em coords locais (não rotacionadas) e o snapshot do undo
+let cropId = null, cropState = null;
 let marquee = null;
 let marqueeCands = [];
 let clip = [];
@@ -1008,8 +1012,18 @@ function drawItems(g, cull) {
       if (gm.outline2) g.stroke(gm.outline2);
     } else if (it.type === 'image') {
       const im = imgFor(it);
-      if (im) g.drawImage(im, it.x, it.y, it.w, it.h);
-      else {
+      if (im) {
+        if (cropId === it.id && cropState) {
+          const f = cropState.fullBox; // recortando: mostra a imagem inteira no lugar
+          g.drawImage(im, f.x, f.y, f.w, f.h);
+        } else {
+          const c = normCrop(it.crop);
+          if (c) {
+            const sw = im.naturalWidth, sh = im.naturalHeight;
+            g.drawImage(im, c.left * sw, c.top * sh, (1 - c.left - c.right) * sw, (1 - c.top - c.bottom) * sh, it.x, it.y, it.w, it.h);
+          } else g.drawImage(im, it.x, it.y, it.w, it.h);
+        }
+      } else {
         g.strokeStyle = '#9a938c'; g.setLineDash([6, 4]);
         g.strokeRect(it.x, it.y, it.w, it.h);
         g.setLineDash([]);
@@ -1071,9 +1085,119 @@ function imgFor(it) {
   }
   return im.complete && im.naturalWidth ? im : null;
 }
+function imgNaturalDims(it) {
+  const im = imgFor(it);
+  if (im) return Promise.resolve([im.naturalWidth, im.naturalHeight]);
+  return new Promise((res) => {
+    const t = new Image();
+    t.onload = () => res([t.naturalWidth, t.naturalHeight]);
+    t.onerror = () => res(null);
+    t.src = it.src;
+  });
+}
+
+/* ---------- recorte de imagem ---------- */
+// crop = frações da imagem original: {top,left,bottom,right}, cada uma 0..1.
+// A caixa do item (x,y,w,h) mostra só a região do recorte, esticada para
+// preenchê-la. Frações (e não pixels) porque sobrevivem a trocar a fonte e são
+// fáceis do agente escrever via update_items sem conhecer o tamanho natural.
+function normCrop(c) {
+  if (!c || typeof c !== 'object') return null;
+  const cl = v => Math.min(0.99, Math.max(0, +v || 0));
+  let t = cl(c.top), l = cl(c.left), b = cl(c.bottom), r = cl(c.right);
+  if (l + r > 0.99) { const s = 0.99 / (l + r); l *= s; r *= s; }
+  if (t + b > 0.99) { const s = 0.99 / (t + b); t *= s; b *= s; }
+  if (t < 0.001 && l < 0.001 && b < 0.001 && r < 0.001) return null;
+  return { top: t, left: l, bottom: b, right: r };
+}
+function fullBoxOf(it) {
+  const c = normCrop(it.crop) || { top: 0, left: 0, bottom: 0, right: 0 };
+  const fw = it.w / (1 - c.left - c.right), fh = it.h / (1 - c.top - c.bottom);
+  return { x: it.x - c.left * fw, y: it.y - c.top * fh, w: fw, h: fh };
+}
+const CROP_HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+const CROP_CURSORS = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize' };
+function cropHandlePts(b) {
+  return [[b.x, b.y], [b.x + b.w / 2, b.y], [b.x + b.w, b.y], [b.x + b.w, b.y + b.h / 2],
+    [b.x + b.w, b.y + b.h], [b.x + b.w / 2, b.y + b.h], [b.x, b.y + b.h], [b.x, b.y + b.h / 2]];
+}
+// mundo → local do item (desfaz a rotação em torno do centro da caixa)
+function cropLocalPt(wx, wy) {
+  const it = cropState && cropState.it;
+  const a = it && (it.angle || 0);
+  if (!a) return [wx, wy];
+  const c = centerOf(it);
+  return rot(wx, wy, c.x, c.y, -a);
+}
+function cropHandleHit(sx, sy) {
+  if (!cropState) return null;
+  const it = cropState.it, a = it.angle || 0, c = centerOf(it);
+  const pts = cropHandlePts(cropState.box);
+  for (let i = 0; i < 8; i++) {
+    const w = a ? rot(pts[i][0], pts[i][1], c.x, c.y, a) : pts[i];
+    if (Math.hypot(sx - w2sX(w[0]), sy - w2sY(w[1])) <= 9) return CROP_HANDLES[i];
+  }
+  return null;
+}
+function startCrop(it) {
+  if (!imgFor(it)) { selIds = [it.id]; draw(); return; }
+  cropId = it.id;
+  cropState = {
+    it, fullBox: fullBoxOf(it), box: { x: it.x, y: it.y, w: it.w, h: it.h },
+    before: subsetSnap([it.id]), drag: null,
+  };
+  hint('hintCrop', 'arraste as alças para recortar — Enter aplica, Esc cancela');
+  draw();
+}
+function finishCrop(cancel) {
+  const st = cropState;
+  cropId = null; cropState = null;
+  if (!st) return;
+  setHint(null);
+  if (!cancel) {
+    const it = scene.items.find(i => i.id === st.it.id);
+    if (it) {
+      const b = st.box, f = st.fullBox;
+      const c = normCrop({
+        top: (b.y - f.y) / f.h, left: (b.x - f.x) / f.w,
+        bottom: (f.y + f.h - b.y - b.h) / f.h, right: (f.x + f.w - b.x - b.w) / f.w,
+      });
+      it.x = b.x; it.y = b.y; it.w = b.w; it.h = b.h;
+      if (c) it.crop = c; else delete it.crop;
+      const after = subsetSnap([it.id]);
+      if (JSON.stringify(st.before) !== JSON.stringify(after)) {
+        pushPatch(st.before, after, [it.id]);
+        save();
+      }
+    }
+  }
+  draw(); refreshPanel();
+}
+function updateCropDrag(wx, wy) {
+  const st = cropState, d = st.drag, f = st.fullBox;
+  const [lx, ly] = cropLocalPt(wx, wy);
+  const MIN = 10;
+  if (d.type === 'move') {
+    const nx = Math.max(f.x, Math.min(d.box0.x + (lx - d.lx0), f.x + f.w - d.box0.w));
+    const ny = Math.max(f.y, Math.min(d.box0.y + (ly - d.ly0), f.y + f.h - d.box0.h));
+    st.box = { x: nx, y: ny, w: d.box0.w, h: d.box0.h };
+    return;
+  }
+  let x0 = d.box0.x, y0 = d.box0.y, x1 = d.box0.x + d.box0.w, y1 = d.box0.y + d.box0.h;
+  if (d.type.includes('w')) x0 = lx;
+  if (d.type.includes('e')) x1 = lx;
+  if (d.type.includes('n')) y0 = ly;
+  if (d.type.includes('s')) y1 = ly;
+  x0 = Math.max(f.x, Math.min(x0, x1 - MIN));
+  x1 = Math.min(f.x + f.w, Math.max(x1, x0 + MIN));
+  y0 = Math.max(f.y, Math.min(y0, y1 - MIN));
+  y1 = Math.min(f.y + f.h, Math.max(y1, y0 + MIN));
+  st.box = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
 
 function draw() {
   if (!isFinite(z) || z <= 0 || !isFinite(panX) || !isFinite(panY)) { z = 1; panX = 60; panY = 80; } // recover from NaN/Infinity
+  if (cropId && !scene.items.some(i => i.id === cropId)) { cropId = null; cropState = null; } // o agente pode ter apagado o item no meio do recorte
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   const dark = document.body.dataset.theme === 'dark';
@@ -1279,6 +1403,46 @@ function draw() {
       ctx.strokeRect(w2sX(b.bx) - 2, w2sY(b.by) - 2, b.w * z + 4, b.h * z + 4);
     }
   }
+  }
+  if (cropId && cropState) {
+    // modo recorte: a imagem inteira aparece no lugar, escurecida fora do
+    // retângulo de recorte; alças brancas ajustam o que fica
+    const it = cropState.it, f = cropState.fullBox, b = cropState.box;
+    const a = it.angle || 0, cc = centerOf(it);
+    const toS = (p) => { const w = a ? rot(p[0], p[1], cc.x, cc.y, a) : [p[0], p[1]]; return [w2sX(w[0]), w2sY(w[1])]; };
+    const poly = (r) => [[r.x, r.y], [r.x + r.w, r.y], [r.x + r.w, r.y + r.h], [r.x, r.y + r.h]].map(toS);
+    const addPoly = (pts) => { ctx.moveTo(pts[0][0], pts[0][1]); for (let i = 1; i < 4; i++) ctx.lineTo(pts[i][0], pts[i][1]); ctx.closePath(); };
+    ctx.beginPath();
+    addPoly(poly(f)); addPoly(poly(b));
+    ctx.fillStyle = 'rgba(15,13,12,.5)';
+    ctx.fill('evenodd');
+    ctx.beginPath(); addPoly(poly(f));
+    ctx.strokeStyle = 'rgba(255,255,255,.5)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    for (const k of [1 / 3, 2 / 3]) {
+      let p1 = toS([b.x + b.w * k, b.y]), p2 = toS([b.x + b.w * k, b.y + b.h]);
+      ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      p1 = toS([b.x, b.y + b.h * k]); p2 = toS([b.x + b.w, b.y + b.h * k]);
+      ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,.35)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.beginPath(); addPoly(poly(b));
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.strokeStyle = '#6965db';
+    ctx.lineWidth = 1.5;
+    for (const p of cropHandlePts(b)) {
+      const [hx, hy] = toS(p);
+      ctx.beginPath(); ctx.rect(hx - 4, hy - 4, 8, 8); ctx.fill(); ctx.stroke();
+    }
   }
 }
 function rotHandleScreen(it) {
@@ -1827,6 +1991,16 @@ cv.addEventListener('pointerdown', e => {
   }
   if (e.button !== 0) return;
 
+  if (cropId && cropState) {
+    const h = cropHandleHit(sx, sy);
+    const [lx, ly] = cropLocalPt(wx, wy);
+    const b = cropState.box;
+    if (h) cropState.drag = { type: h, lx0: lx, ly0: ly, box0: { x: b.x, y: b.y, w: b.w, h: b.h } };
+    else if (lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h) cropState.drag = { type: 'move', lx0: lx, ly0: ly, box0: { x: b.x, y: b.y, w: b.w, h: b.h } };
+    else finishCrop(false); // clique fora do recorte aplica, como no Excalidraw
+    return;
+  }
+
   if (stampMode) {
     placeWidget(stampMode, wx, wy);
     if (!lockTool) setStamp(null);
@@ -1997,6 +2171,20 @@ cv.addEventListener('pointermove', e => {
     if (mode === null) {
       const it = hitItem(wx, wy);
       cv.style.cursor = it && it.link && it.link.to ? 'pointer' : 'default';
+    }
+    return;
+  }
+
+  if (cropId && cropState && mode === null) {
+    if (cropState.drag) {
+      updateCropDrag(wx, wy);
+      draw();
+    } else {
+      const h = cropHandleHit(sx, sy);
+      const b = cropState.box;
+      const [lx, ly] = cropLocalPt(wx, wy);
+      const inside = lx >= b.x && lx <= b.x + b.w && ly >= b.y && ly <= b.y + b.h;
+      cv.style.cursor = h ? CROP_CURSORS[h] : (inside ? 'move' : 'crosshair');
     }
     return;
   }
@@ -2264,6 +2452,7 @@ cv.addEventListener('pointermove', e => {
 });
 
 cv.addEventListener('pointerup', e => {
+  if (cropId && cropState) cropState.drag = null; // soltar o arrasto não sai do modo recorte
   if (mode === 'create') {
     const it = gesture.item;
     let tiny = false;
@@ -2349,6 +2538,7 @@ cv.addEventListener('pointerup', e => {
 });
 
 cv.addEventListener('pointercancel', () => {
+  if (cropId && cropState) cropState.drag = null;
   if (mode === 'create' && gesture.item) {
     scene.items = scene.items.filter(i => i.id !== gesture.item.id);
   } else if ((mode === 'move' || mode === 'resize' || mode === 'rotate' || mode === 'bend') && gesture.before) {
@@ -2363,10 +2553,14 @@ cv.addEventListener('pointercancel', () => {
 });
 
 cv.addEventListener('dblclick', e => {
+  if (cropId) { finishCrop(false); return; } // segundo duplo clique durante o recorte aplica
   const [sx, sy] = canvasPos(e);
   const wx = s2wX(sx), wy = s2wY(sy);
   const it = hitItem(wx, wy);
-  if (it && it.type === 'text') {
+  if (it && it.type === 'image' && !present) {
+    selIds = [it.id];
+    startCrop(it);
+  } else if (it && it.type === 'text') {
     gesture = { newText: false, before: subsetSnap([it.id]) };
     openEditor(it, false);
   } else if (it && ['rect', 'ellipse', 'diamond'].includes(it.type)) {
@@ -2594,6 +2788,13 @@ function alignSel(dir) {
 /* ---------- teclado ---------- */
 window.addEventListener('keydown', e => {
   if (e.target === ed || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (cropId) {
+    // no modo recorte o teclado só serve para aplicar/cancelar; o resto fica
+    // bloqueado para não trocar ferramenta nem desfazer no meio do gesto
+    if (e.key === 'Enter') { e.preventDefault(); finishCrop(false); }
+    else if (e.key === 'Escape') { e.preventDefault(); finishCrop(true); }
+    return;
+  }
   if (e.code === 'Space') { spaceDown = true; e.preventDefault(); return; }
   const k = e.key.toLowerCase();
   const mod = e.ctrlKey || e.metaKey;
@@ -3058,7 +3259,17 @@ function buildSvg() {
     } else if (it.type === 'image') {
       let src = it.src;
       if (typeof src === 'string' && src.startsWith('/')) src = location.origin + src;
-      parts.push(`<image href="${esc(src)}" x="${r2(it.x)}" y="${r2(it.y)}" width="${r2(it.w)}" height="${r2(it.h)}" opacity="${op}"${tr} preserveAspectRatio="none"/>`);
+      const c = normCrop(it.crop);
+      if (c) {
+        // recorte: a imagem inteira é desenhada expandida e cortada pela caixa
+        const fw = it.w / (1 - c.left - c.right), fh = it.h / (1 - c.top - c.bottom);
+        const fx = it.x - c.left * fw, fy = it.y - c.top * fh;
+        const id = 'drimg' + (++clipN);
+        defs.push(`<clipPath id="${id}"><rect x="${r2(it.x)}" y="${r2(it.y)}" width="${r2(it.w)}" height="${r2(it.h)}"/></clipPath>`);
+        parts.push(`<g${tr}><image href="${esc(src)}" x="${r2(fx)}" y="${r2(fy)}" width="${r2(fw)}" height="${r2(fh)}" opacity="${op}" clip-path="url(#${id})" preserveAspectRatio="none"/></g>`);
+      } else {
+        parts.push(`<image href="${esc(src)}" x="${r2(it.x)}" y="${r2(it.y)}" width="${r2(it.w)}" height="${r2(it.h)}" opacity="${op}"${tr} preserveAspectRatio="none"/>`);
+      }
     }
   }
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${r2(x0)} ${r2(y0)} ${r2(x1 - x0)} ${r2(y1 - y0)}" width="${Math.round(x1 - x0)}" height="${Math.round(y1 - y0)}">` +
@@ -3128,7 +3339,15 @@ async function toForeign() {
       }
       const fileId = 'drawrdis-' + it.id;
       files[fileId] = { mimeType: 'image/webp', dataURL: src };
-      elements.push({ ...base, type: 'image', fileId, status: 'saved', scale: [1, 1], crop: null });
+      // Excalidraw guarda o recorte em pixels da imagem original; converter as
+      // frações nossas exige o tamanho natural, então carregamos a imagem aqui
+      let cropOut = null;
+      const c = normCrop(it.crop);
+      if (c) {
+        const dims = await imgNaturalDims(it);
+        if (dims) cropOut = { top: Math.round(c.top * dims[1]), left: Math.round(c.left * dims[0]), bottom: Math.round(c.bottom * dims[1]), right: Math.round(c.right * dims[0]) };
+      }
+      elements.push({ ...base, type: 'image', fileId, status: 'saved', scale: [1, 1], crop: cropOut });
     }
   }
   return { type: 'excalidraw', version: 2, source: 'drawrdis', elements, appState: { viewBackgroundColor: scene.bg || '#ffffff' }, files };
@@ -4121,6 +4340,7 @@ const HELP_PT = `
 <tr><td>Ctrl+F</td><td>buscar texto no quadro (Enter navega entre os achados)</td></tr>
 <tr><td>Botão direito</td><td>menu de contexto: copiar, duplicar, apagar, reordenar, agrupar, travar, link, editar</td></tr>
 <tr><td>Duplo clique (forma)</td><td>cria um rótulo centralizado sobre a forma</td></tr>
+<tr><td>Duplo clique (imagem)</td><td>recortar: arraste as alças, Enter aplica, Esc cancela</td></tr>
 <tr><td>Alt + clique</td><td>selecionar um item sozinho dentro de um grupo</td></tr>
 <tr><td>Alt + - / = (texto)</td><td>fonte −/+ 0,25px</td></tr>
 <tr><td>Setas ligadas</td><td>arraste a ponta perto de uma forma para grudar; mova a forma e a seta acompanha</td></tr>
@@ -4157,6 +4377,7 @@ const HELP_EN = `
 <tr><td>Ctrl+F</td><td>search text on the board (Enter cycles matches)</td></tr>
 <tr><td>Right-click</td><td>context menu: copy, duplicate, delete, reorder, group, lock, link, edit</td></tr>
 <tr><td>Double-click (shape)</td><td>drops a centered label on the shape</td></tr>
+<tr><td>Double-click (image)</td><td>crop: drag the handles, Enter applies, Esc cancels</td></tr>
 <tr><td>Alt + click</td><td>select a single item inside a group</td></tr>
 <tr><td>Alt + - / = (text)</td><td>font −/+ 0.25px</td></tr>
 <tr><td>Bound arrows</td><td>drag an end near a shape to snap it; move the shape, the arrow follows</td></tr>
@@ -4835,6 +5056,41 @@ async function runTests() {
       scene.items = scene.items.filter(i => i.id !== 'dc1');
       selIds = []; save(); draw();
       log('duplo clique em forma cria rótulo centralizado', created && centered && discarded, '');
+    }
+
+    // recorte de imagem: duplo clique entra no modo, alça + Enter aplica, Esc cancela
+    {
+      const off = document.createElement('canvas');
+      off.width = 80; off.height = 40;
+      const og = off.getContext('2d');
+      og.fillStyle = '#2f9e44'; og.fillRect(0, 0, 80, 40);
+      const src = off.toDataURL('image/png');
+      await new Promise((res) => { const t = new Image(); t.onload = res; t.onerror = res; t.src = src; });
+      scene.items.push({ id: 'cr1', type: 'image', x: 700, y: 500, w: 80, h: 40, src });
+      z = 1; panX = 0; panY = 0; draw();
+      let im = null;
+      for (let i = 0; i < 60 && !im; i++) { await sleep(50); im = imgFor(scene.items.find(i => i.id === 'cr1')); }
+      cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 740, clientY: 520 }));
+      await sleep(30);
+      const entered = cropId === 'cr1';
+      pd(780, 540); pm(760, 520); pu(760, 520); // alça SE: recorta para 60x20
+      await sleep(20);
+      key('Enter');
+      await sleep(20);
+      const cr1 = scene.items.find(i => i.id === 'cr1');
+      const applied = cropId === null && cr1 && Math.abs(cr1.w - 60) < 1 && Math.abs(cr1.h - 20) < 1 &&
+        cr1.crop && Math.abs(cr1.crop.right - 0.25) < 0.01 && Math.abs(cr1.crop.bottom - 0.5) < 0.01;
+      cv.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: 730, clientY: 510 }));
+      await sleep(20);
+      const wBefore = cr1.w, cropBefore = JSON.stringify(cr1.crop);
+      pd(760, 520); pm(780, 540); pu(780, 540); // abre até a imagem inteira...
+      key('Escape');                            // ...mas cancela
+      await sleep(20);
+      const cancelled = cropId === null && cr1.w === wBefore && JSON.stringify(cr1.crop) === cropBefore;
+      scene.items = scene.items.filter(i => i.id !== 'cr1');
+      selIds = []; save(); draw();
+      log('recorte: duplo clique entra, alça + Enter aplica, Esc cancela', entered && !!im && applied && cancelled,
+        `entered=${entered} im=${!!im} applied=${applied} cancelled=${cancelled} w=${cr1 && cr1.w} h=${cr1 && cr1.h} crop=${cr1 && JSON.stringify(cr1.crop)}`);
     }
 
     // order só vai no save quando a ordem de camadas muda
