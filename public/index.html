@@ -1282,8 +1282,8 @@ function draw() {
       ctx.strokeStyle = '#6965db';
       ctx.lineWidth = 2;
       ctx.strokeRect(w2sX(b.bx) - 5, w2sY(b.by) - 5, b.w * z + 10, b.h * z + 10);
-      // ancoragem livre (Alt): ponto azul no local exato onde a ponta vai grudar
-      if (gesture.altFree && gesture.bendIt) {
+      // ponto azul no local exato onde a ponta vai grudar
+      if (gesture.bendIt) {
         const bit = gesture.bendIt;
         const cpA = curvePts(bit);
         const idxA = Math.min(gesture.bendIdx, cpA.length - 1);
@@ -1736,7 +1736,10 @@ function applyOpsEvent(p) {
     if (u) { next.push(u); upd.delete(it.id); } else next.push(it);
   }
   for (const it of upd.values()) next.push(it); // update de id desconhecido: entra como novo
-  for (const it of (o.add || [])) if (!rm.has(it.id)) next.push(it);
+  // eco do próprio add (SSE chega depois do doSave concluir) não pode duplicar:
+  // o id já está na cena local, então só acrescenta ids realmente novos
+  const known = new Set(scene.items.map(i => i.id));
+  for (const it of (o.add || [])) if (!rm.has(it.id) && !known.has(it.id)) next.push(it);
   scene.items = next;
   pruneDanglingBinds();
   selIds = selIds.filter(id => scene.items.some(i => i.id === id));
@@ -2234,7 +2237,6 @@ cv.addEventListener('pointermove', e => {
     else it.mids[idx - 1] = [wx, wy];
     let bh = null;
     if (idx === 0 || idx === cp.length - 1) bh = bindTargetAt(wx, wy, it);
-    gesture.altFree = !!e.altKey && (idx === 0 || idx === cp.length - 1);
     if ((bh?.id || null) !== (bindHover?.id || null)) { bindHover = bh; draw(); }
     draw();
     return;
@@ -2467,9 +2469,9 @@ cv.addEventListener('pointerup', e => {
       selIds = [it.id];
       if (it.type === 'arrow' || it.type === 'line') {
         const t1 = bindTargetAt(it.x, it.y, it);
-        if (t1) it.startBind = e.altKey ? { id: t1.id, ...relPoint(t1, it.x, it.y) } : { id: t1.id };
+        if (t1) it.startBind = { id: t1.id, ...relPoint(t1, it.x, it.y) };
         const t2 = bindTargetAt(it.x2, it.y2, it);
-        if (t2) it.endBind = e.altKey ? { id: t2.id, ...relPoint(t2, it.x2, it.y2) } : { id: t2.id };
+        if (t2) it.endBind = { id: t2.id, ...relPoint(t2, it.x2, it.y2) };
       }
       if (gesture.ord0) pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], gesture.ord0, orderIds());
       else pushOp(nullMap([it.id]), subsetSnap([it.id]), [it.id], orderIds(), orderIds());
@@ -2492,10 +2494,10 @@ cv.addEventListener('pointerup', e => {
       const cpU = curvePts(bit);
       if (gesture.bendIdx === 0) {
         const t = bindTargetAt(bit.x, bit.y, bit);
-        if (t) bit.startBind = e.altKey ? { id: t.id, ...relPoint(t, bit.x, bit.y) } : { id: t.id };
+        if (t) bit.startBind = { id: t.id, ...relPoint(t, bit.x, bit.y) };
       } else if (gesture.bendIdx === cpU.length - 1) {
         const t = bindTargetAt(bit.x2, bit.y2, bit);
-        if (t) bit.endBind = e.altKey ? { id: t.id, ...relPoint(t, bit.x2, bit.y2) } : { id: t.id };
+        if (t) bit.endBind = { id: t.id, ...relPoint(t, bit.x2, bit.y2) };
       }
     }
     if (d >= 0.5) {
@@ -4345,7 +4347,7 @@ const HELP_PT = `
 <tr><td>Duplo clique (imagem)</td><td>recortar: arraste as alças, Enter aplica, Esc cancela</td></tr>
 <tr><td>Alt + clique</td><td>selecionar um item sozinho dentro de um grupo</td></tr>
 <tr><td>Alt + - / = (texto)</td><td>fonte −/+ 0,25px</td></tr>
-<tr><td>Setas ligadas</td><td>arraste a ponta perto de uma forma para grudar; mova a forma e a seta acompanha</td></tr>
+<tr><td>Setas ligadas</td><td>arraste a ponta até o ponto exato (funciona em qualquer lugar da forma) e solte para grudar; mova a forma e a seta acompanha</td></tr>
 <tr><td>Ctrl (redimensionar)</td><td>redimensiona simétrico ao redor do centro</td></tr>
 <tr><td>Espaço+arrasto / roda</td><td>mover o quadro</td></tr>
 <tr><td>Ctrl+roda / + / -</td><td>zoom</td></tr>
@@ -4382,7 +4384,7 @@ const HELP_EN = `
 <tr><td>Double-click (image)</td><td>crop: drag the handles, Enter applies, Esc cancels</td></tr>
 <tr><td>Alt + click</td><td>select a single item inside a group</td></tr>
 <tr><td>Alt + - / = (text)</td><td>font −/+ 0.25px</td></tr>
-<tr><td>Bound arrows</td><td>drag an end near a shape to snap it; move the shape, the arrow follows</td></tr>
+<tr><td>Bound arrows</td><td>drag an end to the exact spot (anywhere on the shape) and release to glue it; move the shape, the arrow follows</td></tr>
 <tr><td>Ctrl (resize)</td><td>resize symmetric around the center</td></tr>
 <tr><td>Space+drag / wheel</td><td>pan the board</td></tr>
 <tr><td>Ctrl+wheel / + / -</td><td>zoom</td></tr>
@@ -4679,6 +4681,13 @@ async function runTests() {
     const ar = last();
     log('seta: pontas grudam nas formas', ar.startBind?.id === A.id && ar.endBind?.id === B.id, `s=${ar.startBind?.id === A.id} e=${ar.endBind?.id === B.id}`);
 
+    // sem Alt, a ponta cola no ponto exato onde foi solta (âncora rx/ry)
+    const dropS = { x: s2wX(650), y: s2wY(330) }, dropE = { x: s2wX(940), y: s2wY(330) };
+    const cpA2 = curvePts(ar);
+    const dS = Math.hypot(cpA2[0][0] - dropS.x, cpA2[0][1] - dropS.y);
+    const dE = Math.hypot(cpA2[cpA2.length - 1][0] - dropE.x, cpA2[cpA2.length - 1][1] - dropE.y);
+    log('seta: ponta cola no ponto exato sem Alt', Number.isFinite(ar.startBind.rx) && Number.isFinite(ar.endBind.rx) && dS < 1 && dE < 1, `dS=${dS.toFixed(1)} dE=${dE.toFixed(1)}`);
+
     const startX = curvePts(ar)[0][0];
     selIds = [A.id];
     pd(640, 330); pm(690, 330); pu(690, 330);
@@ -4908,6 +4917,10 @@ async function runTests() {
       applyOpsEvent({ rev: lastRev + 1, ops: { add: [{ id: 'op1', type: 'rect', x: 4000, y: 4000, w: 10, h: 10, by: 'agent' }], update: [], remove: [] } });
       const has = scene.items.some(i => i.id === 'op1');
       log('ops: add do agente entra na cena e pisca', has && flashMap.has('op1'), '');
+      // eco do próprio add (SSE depois do doSave) não pode criar segunda entrada
+      const nEcho = scene.items.length;
+      applyOpsEvent({ rev: lastRev + 1, ops: { add: [{ id: 'op1', type: 'rect', x: 4000, y: 4000, w: 10, h: 10, by: 'agent' }], update: [], remove: [] } });
+      log('ops: eco do próprio add não duplica', scene.items.length === nEcho && scene.items.filter(i => i.id === 'op1').length === 1, `n=${scene.items.length}/${nEcho}`);
       applyOpsEvent({ rev: lastRev + 1, ops: { add: [], update: [{ id: 'op1', type: 'rect', x: 4000, y: 4000, w: 10, h: 10, by: 'agent', fill: '#0f0' }], remove: [] } });
       const upd = scene.items.find(i => i.id === 'op1');
       log('ops: update substitui o item por id', !!upd && upd.fill === '#0f0', '');
